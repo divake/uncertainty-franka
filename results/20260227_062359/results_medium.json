@@ -1,0 +1,15 @@
+{
+  "noise_level": "medium",
+  "noise_params": {
+    "joint_pos_std": 0.01,
+    "joint_vel_std": 0.05,
+    "object_pos_std": 0.05
+  },
+  "num_episodes": 24,
+  "success_rate": 0.875,
+  "success_rate_std": 0.33071891388307384,
+  "avg_reward": 104.58712073167165,
+  "std_reward": 45.13922749268443,
+  "avg_max_height": 0.34796676722665626,
+  "std_max_height": 0.12169998381270547
+}
