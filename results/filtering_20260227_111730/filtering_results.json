@@ -1,0 +1,24 @@
+{
+  "noise_level": "high",
+  "noise_params": {
+    "joint_pos_std": 0.02,
+    "joint_vel_std": 0.1,
+    "object_pos_std": 0.1
+  },
+  "filter_alpha": 0.3333333333333333,
+  "num_episodes": 100,
+  "baseline": {
+    "success_rate": 0.67,
+    "avg_reward": 47.28378326952458,
+    "avg_max_height": 0.2838401175290346
+  },
+  "filtered": {
+    "success_rate": 0.594059405940594,
+    "avg_reward": 55.409738966143955,
+    "avg_max_height": 0.2798170311247358
+  },
+  "improvement": {
+    "success_rate_delta": -0.07594059405940601,
+    "reward_delta": 8.125955696619378
+  }
+}

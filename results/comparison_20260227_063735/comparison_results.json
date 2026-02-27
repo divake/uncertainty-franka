@@ -1,0 +1,27 @@
+{
+  "noise_level": "high",
+  "noise_params": {
+    "joint_pos_std": 0.02,
+    "joint_vel_std": 0.1,
+    "object_pos_std": 0.1
+  },
+  "num_episodes": 30,
+  "num_ensemble": 3,
+  "uncertainty_threshold": 0.1,
+  "baseline": {
+    "success_rate": 0.71875,
+    "avg_reward": 48.88155838474631,
+    "avg_max_height": 0.29263505269773304
+  },
+  "uncertainty_aware": {
+    "success_rate": 0.4375,
+    "avg_reward": 26.778976909816265,
+    "avg_max_height": 0.19353401893749833,
+    "avg_uncertainty": 0.2126118531067388
+  },
+  "improvement": {
+    "success_rate_delta": -0.28125,
+    "reward_delta": -22.102581474930048,
+    "height_delta": -0.09910103376023471
+  }
+}
