@@ -1,0 +1,25 @@
+{
+  "noise_level": "medium",
+  "noise_params": {
+    "joint_pos_std": 0.01,
+    "joint_vel_std": 0.05,
+    "object_pos_std": 0.05
+  },
+  "num_samples": 5,
+  "expected_noise_reduction": 0.4472135954999579,
+  "num_episodes": 80,
+  "baseline": {
+    "success_rate": 0.925,
+    "avg_reward": 116.70341633558273,
+    "avg_max_height": 0.3811623624991626
+  },
+  "multi_sample": {
+    "success_rate": 1.0,
+    "avg_reward": 150.58419094085693,
+    "avg_max_height": 0.4071796551346779
+  },
+  "improvement": {
+    "success_rate_delta": 0.07499999999999996,
+    "reward_delta": 33.8807746052742
+  }
+}
