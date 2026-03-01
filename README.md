@@ -12,7 +12,7 @@ We decompose observation uncertainty into **aleatoric** (sensor noise) and **epi
 - **Epistemic** (OOD state): Conservative action scaling to reduce risk
 - **Both**: Combined filtering + scaling
 
-Tested on Isaac Lab's Franka Lift Cube task (`Isaac-Lift-Cube-Franka-v0`).
+Tested on Isaac Lab's Franka tasks: **Lift Cube** and **Reach**.
 
 ## Key Results
 
@@ -34,27 +34,38 @@ Tested on Isaac Lab's Franka Lift Cube task (`Isaac-Lift-Cube-Franka-v0`).
 | High (10 cm) | 58.0% | 96.1% | **96.1%** |
 | Extreme (15 cm) | 29.0% | 82.0% | **85.2%** |
 
-### Table 3: OOD Perturbation (HIGH noise + OOD)
+### Table 3: OOD Perturbation — Lift (HIGH noise + OOD)
 
-| Scenario | Vanilla | Multi-Sample | **Decomposed** | Delta |
-|---|---|---|---|---|
-| Mass 5x | 38.0% | 75.0% | **84.0%** | **+9.0%** |
-| Mass 2x | 52.0% | 98.0% | 97.0% | -1.0% |
-| Gravity 1.5x | 59.0% | 96.1% | **96.1%** | +0.0% |
+| Scenario | Vanilla | Multi-Sample | Total Uncert. | **Decomposed** | D-TU |
+|---|---|---|---|---|---|
+| Mass 2x | 52.0% | 98.0% | 95.0% | **97.0%** | **+2.0%** |
+| Mass 5x | 41.2% | 78.2% | 78.0% | 77.7% | -0.3% |
+| Friction 0.5x | 42.0% | 95.3% | 86.0% | **96.0%** | **+10.0%** |
+| Gravity 1.5x | 67.0% | 95.3% | 92.0% | **96.1%** | **+4.1%** |
+
+### Table 4: Cross-Task — Reach (HIGH noise + OOD)
+
+| Scenario | Vanilla | Multi-Sample | Total Uncert. | **Decomposed** | D-TU |
+|---|---|---|---|---|---|
+| Gravity 1.5x | 92.2% | 86.7% | 57.8% | **87.5%** | **+29.7%** |
+| Gravity 2.0x | 50.0% | 44.5% | 30.5% | **44.5%** | **+14.1%** |
+| Damping 3x | 96.9% | 96.1% | 92.2% | 93.8% | +1.6% |
+| Damping 5x | 96.9% | 96.1% | 93.0% | **98.4%** | **+5.5%** |
 
 ## Quick Start
 
 ```bash
 conda activate env_py311
 
-# 1. Collect calibration data (clean environment)
+# Lift Cube (default task)
 python collect_calibration_data.py --headless --num_envs 32
-
-# 2. Run full decomposed evaluation (calibration + orthogonality + evaluation)
 python evaluate_decomposed.py --headless --num_envs 32 --noise_level high
-
-# 3. Run OOD perturbation evaluation
 python evaluate_ood.py --headless --num_envs 32 --noise_level high
+
+# Reach (multi-task)
+python collect_calibration_data.py --headless --num_envs 32 --task Isaac-Reach-Franka-v0
+python evaluate_decomposed.py --headless --num_envs 32 --noise_level high --task Isaac-Reach-Franka-v0
+python evaluate_ood.py --headless --num_envs 32 --noise_level high --task Isaac-Reach-Franka-v0
 ```
 
 ## Uncertainty Decomposition
@@ -69,19 +80,20 @@ python evaluate_ood.py --headless --num_envs 32 --noise_level high
 ```
 uncertainty_franka/
 ├── evaluate_decomposed.py       # Main evaluation: calibration + orthogonality + all methods
-├── evaluate_ood.py              # OOD perturbation evaluation (mass/friction/gravity)
+├── evaluate_ood.py              # OOD perturbation evaluation (mass/friction/gravity/damping)
 ├── collect_calibration_data.py  # Collect X_cal from clean environment
 ├── MASTER_PLAN.md               # Full paper plan with experiments and baselines
 ├── uncertainty/                 # Core uncertainty module
 │   ├── aleatoric.py             # MSV + Mahalanobis estimators
 │   ├── epistemic.py             # Spectral/Repulsive estimators (not used — 36-dim too low)
-│   ├── intervention.py          # InterventionController + DecomposedPolicy
+│   ├── intervention.py          # InterventionController + DecomposedPolicy + TotalUncertaintyPolicy
+│   ├── task_config.py           # Task-specific configs (Lift 36D, Reach 32D)
 │   ├── orthogonality.py         # OrthogonalityAnalyzer (Pearson, Spearman, HSIC, CKA)
 │   ├── perturbations.py         # Observation + Environment perturbations
 │   └── conformal.py             # Conformal prediction (planned)
 ├── progress/                    # Versioned experiment journal
 │   ├── v1.0 — v1.2             # Baseline → EMA → Multi-sample
-│   └── v2.0 — v2.4             # Calibration → Estimators → Decomposed → Sweep → OOD
+│   └── v2.0 — v2.6             # Calibration → Estimators → Decomposed → Sweep → OOD → Multi-task
 └── README.md
 ```
 

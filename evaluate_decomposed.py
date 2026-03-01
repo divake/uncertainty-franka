@@ -74,6 +74,10 @@ from uncertainty.perturbations import (
     get_perturbation_config, PERTURBATION_PRESETS
 )
 from uncertainty.orthogonality import OrthogonalityAnalyzer
+from uncertainty.task_config import (
+    get_task_config, get_ground_truth_obs as gt_obs_func,
+    add_noise_to_samples, check_success, is_episode_success,
+)
 
 # Noise configurations (same as evaluate_multi_sample.py)
 NOISE_LEVELS = {
@@ -96,32 +100,12 @@ def obs_to_tensor(obs) -> torch.Tensor:
     return obs
 
 
+# Task-specific config (set in main())
+_task_cfg = None
+
 def get_ground_truth_obs(env) -> Optional[torch.Tensor]:
-    """Get ground truth observation from environment state."""
-    try:
-        unwrapped = env.unwrapped
-        device = unwrapped.device
-        robot = unwrapped.scene.articulations["robot"]
-        joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
-        joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
-        obj = unwrapped.scene.rigid_objects["object"]
-        object_pos = obj.data.root_pos_w - unwrapped.scene.env_origins
-        if hasattr(unwrapped, 'command_manager'):
-            target_pose = unwrapped.command_manager.get_command("object_pose")
-        else:
-            target_pose = torch.zeros(joint_pos.shape[0], 7, device=device)
-            target_pose[:, 3] = 1.0
-        if hasattr(unwrapped, 'action_manager'):
-            prev_actions = unwrapped.action_manager.action
-        else:
-            prev_actions = torch.zeros(joint_pos.shape[0], 8, device=device)
-        return torch.cat([
-            joint_pos[:, :9], joint_vel[:, :9],
-            object_pos[:, :3], target_pose[:, :7],
-            prev_actions[:, :8]
-        ], dim=-1)
-    except Exception:
-        return None
+    """Get ground truth observation from environment state (task-aware)."""
+    return gt_obs_func(env, _task_cfg)
 
 
 @dataclass
@@ -149,13 +133,14 @@ class BaselinePolicy:
 
 class MultiSamplePolicy:
     """Multi-sample averaging policy (no decomposition)."""
-    def __init__(self, policy_nn, env, num_samples, noise_params):
+    def __init__(self, policy_nn, env, num_samples, noise_params, task_cfg=None):
         self.actor = policy_nn.actor
         self.obs_normalizer = policy_nn.actor_obs_normalizer
         self.env = env
         self.num_samples = num_samples
         self.noise_params = noise_params
         self.device = env.unwrapped.device
+        self.task_cfg = task_cfg or _task_cfg
 
     def __call__(self, obs):
         obs_tensor = obs_to_tensor(obs)
@@ -163,17 +148,10 @@ class MultiSamplePolicy:
         if gt_obs is None:
             gt_obs = obs_tensor
 
-        # Multi-sample averaging
         samples = []
-        batch_size = gt_obs.shape[0]
         for _ in range(self.num_samples):
             sample = gt_obs.clone()
-            if self.noise_params.get("joint_pos_std", 0) > 0:
-                sample[:, 0:9] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_pos_std"]
-            if self.noise_params.get("joint_vel_std", 0) > 0:
-                sample[:, 9:18] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_vel_std"]
-            if self.noise_params.get("object_pos_std", 0) > 0:
-                sample[:, 18:21] += torch.randn(batch_size, 3, device=self.device) * self.noise_params["object_pos_std"]
+            sample = add_noise_to_samples(sample, self.noise_params, self.task_cfg, self.device)
             samples.append(sample)
 
         averaged = torch.stack(samples, dim=0).mean(dim=0)
@@ -185,15 +163,18 @@ class MultiSamplePolicy:
         pass
 
 
-def run_evaluation(env, policy, num_episodes: int, label: str) -> List[EpisodeResult]:
-    """Run evaluation and collect results."""
+def run_evaluation(env, policy, num_episodes: int, label: str, task_cfg=None) -> List[EpisodeResult]:
+    """Run evaluation and collect results (task-agnostic)."""
+    cfg = task_cfg or _task_cfg
     num_envs = env.unwrapped.num_envs
     device = env.unwrapped.device
 
     obs = env.get_observations()
     env_steps = torch.zeros(num_envs, device=device)
     env_rewards = torch.zeros(num_envs, device=device)
-    env_max_height = torch.zeros(num_envs, device=device)
+    env_metric = torch.zeros(num_envs, device=device)
+    if cfg.success_type == "tracking":
+        env_metric.fill_(-float('inf'))  # Track best (negative) distance
 
     results: List[EpisodeResult] = []
     completed = 0
@@ -210,27 +191,24 @@ def run_evaluation(env, policy, num_episodes: int, label: str) -> List[EpisodeRe
         env_steps += 1
         env_rewards += rewards
 
-        unwrapped = env.unwrapped
-        if hasattr(unwrapped, 'scene') and hasattr(unwrapped.scene, 'rigid_objects'):
-            heights = unwrapped.scene.rigid_objects["object"].data.root_pos_w[:, 2]
-            env_max_height = torch.maximum(env_max_height, heights)
+        env_metric = check_success(env, env_metric, cfg)
 
         done_idx = dones.nonzero(as_tuple=False).squeeze(-1)
         for idx in done_idx:
             idx = idx.item()
-            success = env_max_height[idx].item() > 0.2
+            success = is_episode_success(env_metric[idx].item(), cfg)
 
             results.append(EpisodeResult(
                 success=success,
                 steps=int(env_steps[idx].item()),
-                max_height=env_max_height[idx].item(),
+                max_height=env_metric[idx].item(),
                 reward=env_rewards[idx].item(),
             ))
             completed += 1
 
             env_steps[idx] = 0
             env_rewards[idx] = 0
-            env_max_height[idx] = 0
+            env_metric[idx] = -float('inf') if cfg.success_type == "tracking" else 0.0
 
             if completed % 20 == 0:
                 sr = sum(1 for r in results if r.success) / len(results)
@@ -239,8 +217,9 @@ def run_evaluation(env, policy, num_episodes: int, label: str) -> List[EpisodeRe
     return results
 
 
-def collect_calibration_data(env, policy, num_episodes: int) -> np.ndarray:
-    """Collect calibration data from clean environment."""
+def collect_calibration_data(env, policy, num_episodes: int, task_cfg=None) -> np.ndarray:
+    """Collect calibration data from clean environment (task-agnostic)."""
+    cfg = task_cfg or _task_cfg
     print(f"\n  Collecting calibration data ({num_episodes} episodes)...")
     num_envs = env.unwrapped.num_envs
     device = env.unwrapped.device
@@ -248,7 +227,9 @@ def collect_calibration_data(env, policy, num_episodes: int) -> np.ndarray:
     all_obs = []
     completed = 0
     episode_obs = {i: [] for i in range(num_envs)}
-    episode_heights = {i: 0.0 for i in range(num_envs)}
+    env_metric = torch.zeros(num_envs, device=device)
+    if cfg.success_type == "tracking":
+        env_metric.fill_(-float('inf'))
 
     obs = env.get_observations()
 
@@ -262,20 +243,16 @@ def collect_calibration_data(env, policy, num_episodes: int) -> np.ndarray:
             actions = policy(obs)
         obs, rewards, dones, _ = env.step(actions)
 
-        unwrapped = env.unwrapped
-        if hasattr(unwrapped, 'scene') and hasattr(unwrapped.scene, 'rigid_objects'):
-            heights = unwrapped.scene.rigid_objects["object"].data.root_pos_w[:, 2]
-            for i in range(num_envs):
-                episode_heights[i] = max(episode_heights[i], heights[i].item())
+        env_metric = check_success(env, env_metric, cfg)
 
         done_idx = dones.nonzero(as_tuple=False).squeeze(-1)
         for idx in done_idx:
             idx = idx.item()
-            if episode_heights[idx] > 0.2:  # Only successful episodes
+            if is_episode_success(env_metric[idx].item(), cfg):
                 all_obs.extend(episode_obs[idx])
             completed += 1
             episode_obs[idx] = []
-            episode_heights[idx] = 0.0
+            env_metric[idx] = -float('inf') if cfg.success_type == "tracking" else 0.0
 
             if completed % 50 == 0:
                 print(f"    Calibration: {completed}/{num_episodes} episodes, {len(all_obs)} observations")
@@ -292,7 +269,8 @@ def add_noise_to_observations(env_cfg, noise_params):
             policy_cfg.joint_pos.noise = GaussianNoiseCfg(mean=0.0, std=noise_params["joint_pos_std"])
         if hasattr(policy_cfg, 'joint_vel') and noise_params["joint_vel_std"] > 0:
             policy_cfg.joint_vel.noise = GaussianNoiseCfg(mean=0.0, std=noise_params["joint_vel_std"])
-        if hasattr(policy_cfg, 'object_position') and noise_params["object_pos_std"] > 0:
+        # Lift has object_position, Reach does not
+        if hasattr(policy_cfg, 'object_position') and noise_params.get("object_pos_std", 0) > 0:
             policy_cfg.object_position.noise = GaussianNoiseCfg(mean=0.0, std=noise_params["object_pos_std"])
         policy_cfg.enable_corruption = True
     return env_cfg
@@ -301,6 +279,9 @@ def add_noise_to_observations(env_cfg, noise_params):
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Main evaluation with decomposed uncertainty."""
+    global _task_cfg
+    _task_cfg = get_task_config(args_cli.task)
+
     print("\n" + "=" * 70)
     print("DECOMPOSED UNCERTAINTY-AWARE EVALUATION")
     print("IROS 2026: Decomposed Uncertainty-Aware Control")
@@ -536,6 +517,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         env=env,
         num_samples=args_cli.num_samples,
         noise_params=noise_params,
+        task_cfg=_task_cfg,
     )
 
     decomposed_results = run_evaluation(env, decomposed_policy, args_cli.num_episodes, "Decomposed")

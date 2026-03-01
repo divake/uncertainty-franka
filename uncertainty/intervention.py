@@ -17,6 +17,8 @@ from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from .task_config import TaskObsConfig, get_task_config, get_ground_truth_obs as _get_gt_obs, add_noise_to_samples
+
 
 class InterventionType(Enum):
     NORMAL = "normal"           # Both low: act normally
@@ -193,18 +195,8 @@ class DecomposedPolicy:
                  controller: InterventionController,
                  env,
                  num_samples: int = 5,
-                 noise_params: Dict = None):
-        """
-        Args:
-            policy_actor: Direct actor network (MLP)
-            policy_obs_normalizer: Observation normalizer
-            msv_estimator: MultiSampleVarianceEstimator (for aleatoric)
-            mahal_estimator: AleatoricEstimator (used as epistemic — Mahalanobis)
-            controller: InterventionController (thresholds set)
-            env: Isaac Lab environment (for ground truth access)
-            num_samples: Number of samples for multi-sample averaging
-            noise_params: Noise parameters for generating samples
-        """
+                 noise_params: Dict = None,
+                 task_cfg: TaskObsConfig = None):
         self.actor = policy_actor
         self.obs_normalizer = policy_obs_normalizer
         self.msv_estimator = msv_estimator
@@ -214,109 +206,44 @@ class DecomposedPolicy:
         self.num_samples = num_samples
         self.noise_params = noise_params or {}
         self.device = env.unwrapped.device
-
-        # Logging
+        self.task_cfg = task_cfg or get_task_config("Isaac-Lift-Cube-Franka-v0")
         self.step_log = []
 
     def __call__(self, obs) -> torch.Tensor:
-        """
-        Get action with decomposed uncertainty-aware control.
-
-        Pipeline:
-          1. Get ground truth observation
-          2. Generate N noisy samples
-          3. u_aleatoric = variance across samples (pure noise signal)
-          4. u_epistemic = Mahalanobis distance of ground truth from calibration
-          5. Controller decides intervention
-          6. Apply filtering and/or conservative scaling
-
-        Args:
-            obs: Observation (TensorDict or Tensor)
-
-        Returns:
-            actions [batch, action_dim]
-        """
         obs_tensor = self._obs_to_tensor(obs)
 
-        # Step 1: Get ground truth observation
-        gt_obs = self._get_ground_truth_obs()
+        gt_obs = _get_gt_obs(self.env, self.task_cfg)
         if gt_obs is None:
             gt_obs = obs_tensor
 
-        # Step 2: Generate N noisy samples from ground truth
-        batch_size = gt_obs.shape[0]
+        # Generate N noisy samples from ground truth
         samples = []
         for _ in range(self.num_samples):
             sample = gt_obs.clone()
-            if self.noise_params.get("joint_pos_std", 0) > 0:
-                sample[:, 0:9] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_pos_std"]
-            if self.noise_params.get("joint_vel_std", 0) > 0:
-                sample[:, 9:18] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_vel_std"]
-            if self.noise_params.get("object_pos_std", 0) > 0:
-                sample[:, 18:21] += torch.randn(batch_size, 3, device=self.device) * self.noise_params["object_pos_std"]
+            sample = add_noise_to_samples(sample, self.noise_params, self.task_cfg, self.device)
             samples.append(sample)
 
-        samples_tensor = torch.stack(samples, dim=0)  # [N, batch, 36]
+        samples_tensor = torch.stack(samples, dim=0)  # [N, batch, obs_dim]
 
-        # Step 3: u_aleatoric = multi-sample variance (pure noise signal)
-        u_a = self.msv_estimator.compute_variance_torch(samples_tensor)  # [batch]
+        u_a = self.msv_estimator.compute_variance_torch(samples_tensor)
+        u_e = self.mahal_estimator.predict_normalized_torch(gt_obs)
 
-        # Step 4: u_epistemic = Mahalanobis distance of ground truth from calibration
-        u_e = self.mahal_estimator.predict_normalized_torch(gt_obs)  # [batch]
-
-        # Step 5: Decide intervention
         need_filter, action_scale, intervention_type = self.controller.decide(u_a, u_e)
 
-        # Step 6: Prepare observation
-        # If high aleatoric: use averaged samples (filtered)
-        # Otherwise: use the noisy observation as-is
-        averaged_obs = samples_tensor.mean(dim=0)  # [batch, 36]
+        averaged_obs = samples_tensor.mean(dim=0)
         final_obs = obs_tensor.clone()
         if need_filter.any():
             final_obs[need_filter] = averaged_obs[need_filter]
 
-        # Step 7: Get action from actor
         with torch.inference_mode():
             normalized_obs = self.obs_normalizer(final_obs)
             actions = self.actor(normalized_obs)
 
-        # Step 8: Apply conservative scaling for high epistemic
         actions = actions * action_scale.unsqueeze(-1)
 
         return actions
 
-    def _get_ground_truth_obs(self) -> Optional[torch.Tensor]:
-        """Get ground truth observation from environment."""
-        try:
-            unwrapped = self.env.unwrapped
-            robot = unwrapped.scene.articulations["robot"]
-            joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
-            joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
-
-            obj = unwrapped.scene.rigid_objects["object"]
-            object_pos = obj.data.root_pos_w - unwrapped.scene.env_origins
-
-            if hasattr(unwrapped, 'command_manager'):
-                target_pose = unwrapped.command_manager.get_command("object_pose")
-            else:
-                target_pose = torch.zeros(joint_pos.shape[0], 7, device=self.device)
-                target_pose[:, 3] = 1.0
-
-            if hasattr(unwrapped, 'action_manager'):
-                prev_actions = unwrapped.action_manager.action
-            else:
-                prev_actions = torch.zeros(joint_pos.shape[0], 8, device=self.device)
-
-            return torch.cat([
-                joint_pos[:, :9], joint_vel[:, :9],
-                object_pos[:, :3], target_pose[:, :7],
-                prev_actions[:, :8]
-            ], dim=-1)
-        except Exception:
-            return None
-
     def _obs_to_tensor(self, obs) -> torch.Tensor:
-        """Convert observation to tensor."""
         if hasattr(obs, 'get'):
             return obs.get('policy', obs)
         elif hasattr(obs, '__getitem__') and not isinstance(obs, torch.Tensor):
@@ -356,7 +283,8 @@ class TotalUncertaintyPolicy:
                  beta: float = 0.3,
                  num_samples: int = 5,
                  noise_params: Dict = None,
-                 min_action_scale: float = 0.3):
+                 min_action_scale: float = 0.3,
+                 task_cfg: TaskObsConfig = None):
         self.actor = policy_actor
         self.obs_normalizer = policy_obs_normalizer
         self.msv_estimator = msv_estimator
@@ -368,15 +296,14 @@ class TotalUncertaintyPolicy:
         self.noise_params = noise_params or {}
         self.min_action_scale = min_action_scale
         self.device = env.unwrapped.device
-
-        # Statistics
+        self.task_cfg = task_cfg or get_task_config("Isaac-Lift-Cube-Franka-v0")
         self.intervene_count = 0
         self.normal_count = 0
 
     def __call__(self, obs) -> torch.Tensor:
         obs_tensor = self._obs_to_tensor(obs)
 
-        gt_obs = self._get_ground_truth_obs()
+        gt_obs = _get_gt_obs(self.env, self.task_cfg)
         if gt_obs is None:
             gt_obs = obs_tensor
 
@@ -384,27 +311,17 @@ class TotalUncertaintyPolicy:
         samples = []
         for _ in range(self.num_samples):
             sample = gt_obs.clone()
-            if self.noise_params.get("joint_pos_std", 0) > 0:
-                sample[:, 0:9] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_pos_std"]
-            if self.noise_params.get("joint_vel_std", 0) > 0:
-                sample[:, 9:18] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_vel_std"]
-            if self.noise_params.get("object_pos_std", 0) > 0:
-                sample[:, 18:21] += torch.randn(batch_size, 3, device=self.device) * self.noise_params["object_pos_std"]
+            sample = add_noise_to_samples(sample, self.noise_params, self.task_cfg, self.device)
             samples.append(sample)
 
         samples_tensor = torch.stack(samples, dim=0)
 
-        # Compute individual uncertainties
         u_a = self.msv_estimator.compute_variance_torch(samples_tensor)
         u_e = self.mahal_estimator.predict_normalized_torch(gt_obs)
 
-        # Monolithic: combine into single scalar
         u_total = (u_a + u_e) / 2.0
-
-        # Single threshold decision: intervene or not
         high_total = u_total > self.tau_total
 
-        # If intervening: apply BOTH filtering + conservative (can't distinguish)
         averaged_obs = samples_tensor.mean(dim=0)
         final_obs = obs_tensor.clone()
         if high_total.any():
@@ -414,7 +331,6 @@ class TotalUncertaintyPolicy:
             normalized_obs = self.obs_normalizer(final_obs)
             actions = self.actor(normalized_obs)
 
-        # Conservative scaling applied uniformly when u_total is high
         action_scale = torch.ones(batch_size, device=self.device)
         action_scale[high_total] = torch.clamp(
             1.0 - self.beta * u_total[high_total],
@@ -422,7 +338,6 @@ class TotalUncertaintyPolicy:
         )
         actions = actions * action_scale.unsqueeze(-1)
 
-        # Track stats
         self.intervene_count += high_total.sum().item()
         self.normal_count += (~high_total).sum().item()
 
@@ -442,31 +357,6 @@ class TotalUncertaintyPolicy:
 
     def reset(self, dones: torch.Tensor):
         pass
-
-    def _get_ground_truth_obs(self) -> Optional[torch.Tensor]:
-        try:
-            unwrapped = self.env.unwrapped
-            robot = unwrapped.scene.articulations["robot"]
-            joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
-            joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
-            obj = unwrapped.scene.rigid_objects["object"]
-            object_pos = obj.data.root_pos_w - unwrapped.scene.env_origins
-            if hasattr(unwrapped, 'command_manager'):
-                target_pose = unwrapped.command_manager.get_command("object_pose")
-            else:
-                target_pose = torch.zeros(joint_pos.shape[0], 7, device=self.device)
-                target_pose[:, 3] = 1.0
-            if hasattr(unwrapped, 'action_manager'):
-                prev_actions = unwrapped.action_manager.action
-            else:
-                prev_actions = torch.zeros(joint_pos.shape[0], 8, device=self.device)
-            return torch.cat([
-                joint_pos[:, :9], joint_vel[:, :9],
-                object_pos[:, :3], target_pose[:, :7],
-                prev_actions[:, :8]
-            ], dim=-1)
-        except Exception:
-            return None
 
     def _obs_to_tensor(self, obs) -> torch.Tensor:
         if hasattr(obs, 'get'):

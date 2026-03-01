@@ -17,6 +17,7 @@ This folder tracks every major milestone with full parameters, results, and pape
 | [v2.3](v2.3_noise_level_sweep.md) | Noise Level Sweep (Table 2) | 2026-02-28 | Decomposed beats MS at extreme noise (+3.2%) |
 | [v2.4](v2.4_ood_perturbation_testing.md) | OOD Perturbation Testing (Table 3) | 2026-02-28 | Decomposed beats MS at mass 5x (+9.0%) |
 | [v2.5](v2.5_total_uncertainty_baseline.md) | Total Uncertainty Baseline (P2) | 2026-02-28 | Decomposed beats TU in 4/6 scenarios |
+| [v2.6](v2.6_multi_task_reach.md) | Multi-Task: Reach (P3) | 2026-02-28 | Orthogonality holds, D beats TU in 4/4 Reach scenarios |
 
 ## Current Best Results (HIGH noise, 100 episodes)
 

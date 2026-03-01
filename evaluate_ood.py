@@ -62,6 +62,14 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uncertainty.aleatoric import AleatoricEstimator, MultiSampleVarianceEstimator
 from uncertainty.intervention import InterventionController, DecomposedPolicy, TotalUncertaintyPolicy
+from uncertainty.task_config import (
+    get_task_config, get_ground_truth_obs as gt_obs_func,
+    add_noise_to_samples, check_success, is_episode_success,
+    get_ood_scenarios,
+)
+
+# Task-specific config (set in main())
+_task_cfg = None
 
 NOISE_LEVELS = {
     "none": {"joint_pos_std": 0.0, "joint_vel_std": 0.0, "object_pos_std": 0.0},
@@ -84,30 +92,8 @@ def obs_to_tensor(obs) -> torch.Tensor:
 
 
 def get_ground_truth_obs(env) -> Optional[torch.Tensor]:
-    try:
-        unwrapped = env.unwrapped
-        device = unwrapped.device
-        robot = unwrapped.scene.articulations["robot"]
-        joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
-        joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
-        obj = unwrapped.scene.rigid_objects["object"]
-        object_pos = obj.data.root_pos_w - unwrapped.scene.env_origins
-        if hasattr(unwrapped, 'command_manager'):
-            target_pose = unwrapped.command_manager.get_command("object_pose")
-        else:
-            target_pose = torch.zeros(joint_pos.shape[0], 7, device=device)
-            target_pose[:, 3] = 1.0
-        if hasattr(unwrapped, 'action_manager'):
-            prev_actions = unwrapped.action_manager.action
-        else:
-            prev_actions = torch.zeros(joint_pos.shape[0], 8, device=device)
-        return torch.cat([
-            joint_pos[:, :9], joint_vel[:, :9],
-            object_pos[:, :3], target_pose[:, :7],
-            prev_actions[:, :8]
-        ], dim=-1)
-    except Exception:
-        return None
+    """Get ground truth observation (task-aware)."""
+    return gt_obs_func(env, _task_cfg)
 
 
 @dataclass
@@ -147,15 +133,9 @@ class MultiSamplePolicy:
         if gt_obs is None:
             gt_obs = obs_tensor
         samples = []
-        batch_size = gt_obs.shape[0]
         for _ in range(self.num_samples):
             sample = gt_obs.clone()
-            if self.noise_params.get("joint_pos_std", 0) > 0:
-                sample[:, 0:9] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_pos_std"]
-            if self.noise_params.get("joint_vel_std", 0) > 0:
-                sample[:, 9:18] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_vel_std"]
-            if self.noise_params.get("object_pos_std", 0) > 0:
-                sample[:, 18:21] += torch.randn(batch_size, 3, device=self.device) * self.noise_params["object_pos_std"]
+            sample = add_noise_to_samples(sample, self.noise_params, _task_cfg, self.device)
             samples.append(sample)
         averaged = torch.stack(samples, dim=0).mean(dim=0)
         with torch.inference_mode():
@@ -167,14 +147,17 @@ class MultiSamplePolicy:
 
 
 def run_ood_evaluation(env, policy, num_episodes: int, label: str) -> List[EpisodeResult]:
-    """Run evaluation — OOD perturbations already applied to the env."""
+    """Run evaluation — OOD perturbations already applied to the env (task-agnostic)."""
+    cfg = _task_cfg
     num_envs = env.unwrapped.num_envs
     device = env.unwrapped.device
 
     obs = env.get_observations()
     env_steps = torch.zeros(num_envs, device=device)
     env_rewards = torch.zeros(num_envs, device=device)
-    env_max_height = torch.zeros(num_envs, device=device)
+    env_metric = torch.zeros(num_envs, device=device)
+    if cfg.success_type == "tracking":
+        env_metric.fill_(-float('inf'))
 
     results: List[EpisodeResult] = []
     completed = 0
@@ -191,25 +174,22 @@ def run_ood_evaluation(env, policy, num_episodes: int, label: str) -> List[Episo
         env_steps += 1
         env_rewards += rewards
 
-        unwrapped = env.unwrapped
-        if hasattr(unwrapped, 'scene') and hasattr(unwrapped.scene, 'rigid_objects'):
-            heights = unwrapped.scene.rigid_objects["object"].data.root_pos_w[:, 2]
-            env_max_height = torch.maximum(env_max_height, heights)
+        env_metric = check_success(env, env_metric, cfg)
 
         done_idx = dones.nonzero(as_tuple=False).squeeze(-1)
         for idx in done_idx:
             idx = idx.item()
-            success = env_max_height[idx].item() > 0.2
+            success = is_episode_success(env_metric[idx].item(), cfg)
             results.append(EpisodeResult(
                 success=success,
                 steps=int(env_steps[idx].item()),
-                max_height=env_max_height[idx].item(),
+                max_height=env_metric[idx].item(),
                 reward=env_rewards[idx].item(),
             ))
             completed += 1
             env_steps[idx] = 0
             env_rewards[idx] = 0
-            env_max_height[idx] = 0
+            env_metric[idx] = -float('inf') if cfg.success_type == "tracking" else 0.0
 
             if completed % 20 == 0:
                 sr = sum(1 for r in results if r.success) / len(results)
@@ -235,21 +215,31 @@ def add_noise_to_observations(env_cfg, noise_params):
 # PhysX property snapshot / restore — avoids creating new environments
 # =========================================================================
 
-def snapshot_physx_properties(env):
+def snapshot_physx_properties(env, task_cfg):
     """Capture original PhysX properties so we can restore between scenarios."""
     import carb
     from isaaclab.sim import SimulationContext
 
     unwrapped = env.unwrapped
     snapshot = {}
+    num_envs = unwrapped.num_envs
+    snapshot["physx_indices"] = torch.arange(num_envs, dtype=torch.int32, device="cpu")
+
+    if task_cfg.has_object:
+        try:
+            obj = unwrapped.scene.rigid_objects["object"]
+            snapshot["object_masses"] = obj.root_physx_view.get_masses().clone()
+            snapshot["object_materials"] = obj.root_physx_view.get_material_properties().clone()
+        except Exception as e:
+            print(f"  Warning: could not snapshot object properties: {e}")
+
+    # Robot joint properties (for Reach OOD: damping changes)
     try:
-        obj = unwrapped.scene.rigid_objects["object"]
-        snapshot["object_masses"] = obj.root_physx_view.get_masses().clone()
-        snapshot["object_materials"] = obj.root_physx_view.get_material_properties().clone()
-        num_envs = snapshot["object_masses"].shape[0]
-        snapshot["physx_indices"] = torch.arange(num_envs, dtype=torch.int32, device="cpu")
+        robot = unwrapped.scene.articulations["robot"]
+        snapshot["robot_joint_damping"] = robot.root_physx_view.get_dof_dampings().clone()
     except Exception as e:
-        print(f"  Warning: could not snapshot object properties: {e}")
+        print(f"  Warning: could not snapshot robot joint properties: {e}")
+
     try:
         sim_ctx = SimulationContext.instance()
         snapshot["gravity"] = list(sim_ctx.cfg.gravity)
@@ -258,21 +248,31 @@ def snapshot_physx_properties(env):
     return snapshot
 
 
-def restore_physx_properties(env, snapshot):
+def restore_physx_properties(env, snapshot, task_cfg):
     """Restore PhysX properties to their original values."""
     import carb
     from isaaclab.sim import SimulationContext
 
     unwrapped = env.unwrapped
     idx = snapshot["physx_indices"]
+
+    if task_cfg.has_object:
+        try:
+            obj = unwrapped.scene.rigid_objects["object"]
+            if "object_masses" in snapshot:
+                obj.root_physx_view.set_masses(snapshot["object_masses"].clone(), idx)
+            if "object_materials" in snapshot:
+                obj.root_physx_view.set_material_properties(snapshot["object_materials"].clone(), idx)
+        except Exception as e:
+            print(f"  Warning: could not restore object properties: {e}")
+
     try:
-        obj = unwrapped.scene.rigid_objects["object"]
-        if "object_masses" in snapshot:
-            obj.root_physx_view.set_masses(snapshot["object_masses"].clone(), idx)
-        if "object_materials" in snapshot:
-            obj.root_physx_view.set_material_properties(snapshot["object_materials"].clone(), idx)
+        robot = unwrapped.scene.articulations["robot"]
+        if "robot_joint_damping" in snapshot:
+            robot.root_physx_view.set_dof_dampings(snapshot["robot_joint_damping"].clone(), idx)
     except Exception as e:
-        print(f"  Warning: could not restore object properties: {e}")
+        print(f"  Warning: could not restore robot joint properties: {e}")
+
     try:
         if "gravity" in snapshot:
             sim_ctx = SimulationContext.instance()
@@ -281,22 +281,22 @@ def restore_physx_properties(env, snapshot):
         print(f"  Warning: could not restore gravity: {e}")
 
 
-def apply_ood_perturbation(env, ood_type, ood_params, snapshot):
+def apply_ood_perturbation(env, ood_type, ood_params, snapshot, task_cfg):
     """Apply a single OOD perturbation from original baseline (not cumulative)."""
     import carb
     from isaaclab.sim import SimulationContext
 
-    # First restore to original
-    restore_physx_properties(env, snapshot)
+    restore_physx_properties(env, snapshot, task_cfg)
 
     unwrapped = env.unwrapped
     idx = snapshot["physx_indices"]
-    if ood_type == "mass":
+
+    if ood_type == "mass" and task_cfg.has_object:
         scale = ood_params.get("scale", 5.0)
         obj = unwrapped.scene.rigid_objects["object"]
         obj.root_physx_view.set_masses(snapshot["object_masses"].clone() * scale, idx)
         print(f"  Applied mass change: {scale}x")
-    elif ood_type == "friction":
+    elif ood_type == "friction" and task_cfg.has_object:
         scale = ood_params.get("scale", 0.2)
         obj = unwrapped.scene.rigid_objects["object"]
         materials = snapshot["object_materials"].clone()
@@ -311,22 +311,22 @@ def apply_ood_perturbation(env, ood_type, ood_params, snapshot):
         sim_ctx = SimulationContext.instance()
         sim_ctx.physics_sim_view.set_gravity(carb.Float3(*new_gravity))
         print(f"  Applied gravity change: {scale}x ({new_gravity})")
-
-
-# OOD test scenarios
-OOD_SCENARIOS = {
-    "E3_mass_2x":      {"ood_type": "mass",     "ood_params": {"scale": 2.0},  "description": "Object 2x heavier"},
-    "E3_mass_5x":      {"ood_type": "mass",     "ood_params": {"scale": 5.0},  "description": "Object 5x heavier"},
-    "E3_mass_10x":     {"ood_type": "mass",     "ood_params": {"scale": 10.0}, "description": "Object 10x heavier"},
-    "E4_friction_0.5":  {"ood_type": "friction", "ood_params": {"scale": 0.5},  "description": "Friction 0.5x (slippery)"},
-    "E4_friction_0.2":  {"ood_type": "friction", "ood_params": {"scale": 0.2},  "description": "Friction 0.2x (very slippery)"},
-    "E6_gravity_1.5":   {"ood_type": "gravity",  "ood_params": {"scale": 1.5},  "description": "Gravity 1.5x (heavier world)"},
-}
+    elif ood_type == "joint_damping":
+        scale = ood_params.get("scale", 3.0)
+        robot = unwrapped.scene.articulations["robot"]
+        robot.root_physx_view.set_dof_dampings(snapshot["robot_joint_damping"].clone() * scale, idx)
+        print(f"  Applied joint damping change: {scale}x")
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """OOD perturbation evaluation using a SINGLE environment."""
+    global _task_cfg
+    _task_cfg = get_task_config(args_cli.task)
+
+    # Get task-appropriate OOD scenarios
+    OOD_SCENARIOS = get_ood_scenarios(_task_cfg)
+
     print("\n" + "=" * 70)
     print("OOD PERTURBATION EVALUATION")
     print("IROS 2026: Decomposed Uncertainty-Aware Control")
@@ -343,11 +343,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"  Scenarios: {len(OOD_SCENARIOS)}")
 
     # Load calibration data
+    task_name = args_cli.task.split(":")[-1]
     if args_cli.cal_data_dir:
         X_cal = np.load(os.path.join(args_cli.cal_data_dir, "X_cal.npy"))
     else:
-        cal_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "calibration_data", "Isaac-Lift-Cube-Franka-v0_20260228_181927")
+        # Search for calibration data matching the task
+        cal_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "calibration_data")
+        cal_dir = None
+        if os.path.isdir(cal_base):
+            for d in sorted(os.listdir(cal_base), reverse=True):
+                if d.startswith(task_name):
+                    candidate = os.path.join(cal_base, d)
+                    if os.path.exists(os.path.join(candidate, "X_cal.npy")):
+                        cal_dir = candidate
+                        break
+        if cal_dir is None:
+            print(f"  ERROR: No calibration data found for {task_name}")
+            print(f"  Run: python collect_calibration_data.py --task {args_cli.task} --headless --num_envs 32")
+            env.close()
+            return {}
         X_cal = np.load(os.path.join(cal_dir, "X_cal.npy"))
     print(f"  Calibration data: {X_cal.shape}")
 
@@ -387,7 +401,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
 
     # Snapshot original PhysX properties BEFORE any perturbations
     env.reset()
-    physx_snapshot = snapshot_physx_properties(env)
+    physx_snapshot = snapshot_physx_properties(env, _task_cfg)
     print(f"  PhysX snapshot captured: {list(physx_snapshot.keys())}")
 
     # =====================================================================
@@ -401,7 +415,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         print(f"{'='*70}")
 
         # Apply perturbation (restores originals first, then applies)
-        apply_ood_perturbation(env, scenario_cfg["ood_type"], scenario_cfg["ood_params"], physx_snapshot)
+        apply_ood_perturbation(env, scenario_cfg["ood_type"], scenario_cfg["ood_params"], physx_snapshot, _task_cfg)
 
         scenario_results = {}
 
@@ -444,6 +458,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
             env=env,
             num_samples=args_cli.num_samples,
             noise_params=noise_params,
+            task_cfg=_task_cfg,
         )
         decomp_res = run_ood_evaluation(
             env, decomp_policy, args_cli.num_episodes, f"Decomp-{scenario_name}"
@@ -477,6 +492,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
             beta=args_cli.beta,
             num_samples=args_cli.num_samples,
             noise_params=noise_params,
+            task_cfg=_task_cfg,
         )
         total_res = run_ood_evaluation(
             env, total_policy, args_cli.num_episodes, f"Total-{scenario_name}"
@@ -495,7 +511,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         all_scenario_results[scenario_name] = scenario_results
 
     # Restore originals before closing
-    restore_physx_properties(env, physx_snapshot)
+    restore_physx_properties(env, physx_snapshot, _task_cfg)
 
     # =====================================================================
     # SUMMARY

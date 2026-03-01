@@ -51,47 +51,18 @@ import isaaclab_tasks
 from isaaclab_tasks.utils.hydra import hydra_task_config
 from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from uncertainty.task_config import (
+    get_task_config, get_ground_truth_obs as gt_obs_func,
+    check_success, is_episode_success,
+)
+
+# Task config (set in main())
+_task_cfg = None
 
 def get_ground_truth_obs(env) -> torch.Tensor:
-    """
-    Get ground truth observation from environment state.
-    Reconstructs observation from actual robot and object state.
-    """
-    unwrapped = env.unwrapped
-    device = unwrapped.device
-
-    # Get robot state
-    robot = unwrapped.scene.articulations["robot"]
-    joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
-    joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
-
-    # Get object state
-    obj = unwrapped.scene.rigid_objects["object"]
-    object_pos = obj.data.root_pos_w - unwrapped.scene.env_origins
-
-    # Get target pose
-    if hasattr(unwrapped, 'command_manager'):
-        target_pose = unwrapped.command_manager.get_command("object_pose")
-    else:
-        target_pose = torch.zeros(joint_pos.shape[0], 7, device=device)
-        target_pose[:, 3] = 1.0
-
-    # Get previous actions
-    if hasattr(unwrapped, 'action_manager'):
-        prev_actions = unwrapped.action_manager.action
-    else:
-        prev_actions = torch.zeros(joint_pos.shape[0], 8, device=device)
-
-    # Concatenate: [joint_pos(9), joint_vel(9), obj_pos(3), target(7), actions(8)] = 36
-    ground_truth = torch.cat([
-        joint_pos[:, :9],
-        joint_vel[:, :9],
-        object_pos[:, :3],
-        target_pose[:, :7],
-        prev_actions[:, :8]
-    ], dim=-1)
-
-    return ground_truth
+    """Get ground truth observation from environment state (task-aware)."""
+    return gt_obs_func(env, _task_cfg)
 
 
 def obs_to_tensor(obs) -> torch.Tensor:
@@ -109,6 +80,9 @@ def obs_to_tensor(obs) -> torch.Tensor:
 @hydra_task_config(args_cli.task, args_cli.agent)
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Collect calibration data from clean environment."""
+    global _task_cfg
+    _task_cfg = get_task_config(args_cli.task)
+
     print("\n" + "=" * 70)
     print("CALIBRATION DATA COLLECTION")
     print("Clean environment — no noise — successful trajectories only")
@@ -146,12 +120,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"  Seed: {args_cli.seed}")
 
     # Storage for calibration data
-    all_observations = []  # Will store ground truth observations
+    all_observations = []
     all_actions = []
-    episode_observations = {i: [] for i in range(num_envs)}  # Per-env temp storage
+    episode_observations = {i: [] for i in range(num_envs)}
     episode_actions = {i: [] for i in range(num_envs)}
     episode_rewards = {i: 0.0 for i in range(num_envs)}
-    episode_max_heights = {i: 0.0 for i in range(num_envs)}
+
+    # Task-agnostic success metric
+    env_metric = torch.zeros(num_envs, device=device)
+    if _task_cfg.success_type == "tracking":
+        env_metric.fill_(-float('inf'))
 
     completed_episodes = 0
     successful_episodes = 0
@@ -163,57 +141,45 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"\nCollecting calibration data...")
 
     while completed_episodes < args_cli.num_episodes:
-        # Get ground truth observation
         gt_obs = get_ground_truth_obs(env)
 
-        # Store observation for each env
         for i in range(num_envs):
             episode_observations[i].append(gt_obs[i].cpu().numpy())
 
-        # Get action from policy
         with torch.inference_mode():
             actions = policy(obs)
 
-        # Store actions
         for i in range(num_envs):
             episode_actions[i].append(actions[i].cpu().numpy())
 
-        # Step environment
         obs, rewards, dones, _ = env.step(actions)
 
         env_steps += 1
         total_steps += 1
 
-        # Track rewards and heights
         for i in range(num_envs):
             episode_rewards[i] += rewards[i].item()
 
-        # Track object height
-        unwrapped = env.unwrapped
-        if hasattr(unwrapped, 'scene') and hasattr(unwrapped.scene, 'rigid_objects'):
-            heights = unwrapped.scene.rigid_objects["object"].data.root_pos_w[:, 2]
-            for i in range(num_envs):
-                episode_max_heights[i] = max(episode_max_heights[i], heights[i].item())
+        # Track task-specific success metric
+        env_metric = check_success(env, env_metric, _task_cfg)
 
         # Process done episodes
         done_idx = dones.nonzero(as_tuple=False).squeeze(-1)
         for idx in done_idx:
             idx = idx.item()
-            success = episode_max_heights[idx] > 0.2
+            success = is_episode_success(env_metric[idx].item(), _task_cfg)
 
             if success:
-                # Only store observations from SUCCESSFUL episodes
                 all_observations.extend(episode_observations[idx])
                 all_actions.extend(episode_actions[idx])
                 successful_episodes += 1
 
             completed_episodes += 1
 
-            # Reset per-env storage
             episode_observations[idx] = []
             episode_actions[idx] = []
             episode_rewards[idx] = 0.0
-            episode_max_heights[idx] = 0.0
+            env_metric[idx] = -float('inf') if _task_cfg.success_type == "tracking" else 0.0
             env_steps[idx] = 0
 
             if completed_episodes % 50 == 0:
@@ -236,11 +202,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
 
     # Print observation statistics
     print(f"\nObservation Statistics:")
-    print(f"  Joint positions (0:9):  mean={X_cal[:, :9].mean():.4f}, std={X_cal[:, :9].std():.4f}")
-    print(f"  Joint velocities (9:18): mean={X_cal[:, 9:18].mean():.4f}, std={X_cal[:, 9:18].std():.4f}")
-    print(f"  Object position (18:21): mean={X_cal[:, 18:21].mean():.4f}, std={X_cal[:, 18:21].std():.4f}")
-    print(f"  Target pose (21:28):     mean={X_cal[:, 21:28].mean():.4f}, std={X_cal[:, 21:28].std():.4f}")
-    print(f"  Prev actions (28:36):    mean={X_cal[:, 28:36].mean():.4f}, std={X_cal[:, 28:36].std():.4f}")
+    jp_s, jp_e = _task_cfg.joint_pos_slice
+    jv_s, jv_e = _task_cfg.joint_vel_slice
+    print(f"  Joint positions ({jp_s}:{jp_e}):  mean={X_cal[:, jp_s:jp_e].mean():.4f}, std={X_cal[:, jp_s:jp_e].std():.4f}")
+    print(f"  Joint velocities ({jv_s}:{jv_e}): mean={X_cal[:, jv_s:jv_e].mean():.4f}, std={X_cal[:, jv_s:jv_e].std():.4f}")
+    if _task_cfg.noisy_slice:
+        ns_s, ns_e = _task_cfg.noisy_slice
+        print(f"  Object position ({ns_s}:{ns_e}): mean={X_cal[:, ns_s:ns_e].mean():.4f}, std={X_cal[:, ns_s:ns_e].std():.4f}")
 
     # Save calibration data
     if args_cli.output_dir is None:
@@ -268,11 +236,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         "action_dim": A_cal.shape[1],
         "seed": args_cli.seed,
         "obs_structure": {
-            "joint_pos": "0:9",
-            "joint_vel": "9:18",
-            "object_pos": "18:21",
-            "target_pose": "21:28",
-            "prev_actions": "28:36"
+            "joint_pos": f"{_task_cfg.joint_pos_slice[0]}:{_task_cfg.joint_pos_slice[1]}",
+            "joint_vel": f"{_task_cfg.joint_vel_slice[0]}:{_task_cfg.joint_vel_slice[1]}",
+            "obs_dim": _task_cfg.obs_dim,
+            "has_object": _task_cfg.has_object,
+            "command_name": _task_cfg.command_name,
         },
         "obs_stats": {
             "mean": X_cal.mean(axis=0).tolist(),

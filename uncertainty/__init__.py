@@ -28,6 +28,13 @@ from .perturbations import (
     get_perturbation_config,
 )
 
+# Task configuration
+from .task_config import (
+    TaskObsConfig,
+    TASK_CONFIGS,
+    get_task_config,
+)
+
 # Analysis
 from .orthogonality import OrthogonalityAnalyzer
 from .conformal import (
@@ -48,6 +55,8 @@ __all__ = [
     "PerturbationType", "PerturbationConfig",
     "ObservationPerturbation", "EnvironmentPerturbation",
     "PERTURBATION_PRESETS", "get_perturbation_config",
+    # Task configuration
+    "TaskObsConfig", "TASK_CONFIGS", "get_task_config",
     # Analysis
     "OrthogonalityAnalyzer",
     "ConformalCalibrator", "AdaptiveConformalInference",
