@@ -59,6 +59,17 @@ Deep Ensemble and MC Dropout perform **worse than vanilla** because action varia
 | Damping 3x | 96.9% | 96.1% | 92.2% | 93.8% | +1.6% |
 | Damping 5x | 96.9% | 96.1% | 93.0% | **98.4%** | **+5.5%** |
 
+### Table 5: Conformal Prediction Coverage (HIGH noise, 200 test episodes, Lift)
+
+| Method | Success Rate |
+|---|---|
+| No CP (Vanilla) | 66.5% |
+| Total Uncertainty CP (90%) | 79.0% |
+| **Decomposed CP (90%)** | **80.0%** |
+| **Decomposed (fixed thresholds)** | **95.1%** |
+
+Conformal prediction provides principled threshold selection with statistical coverage guarantees. Decomposed CP achieves higher success with fewer abstentions than Total Uncertainty CP.
+
 ## Quick Start
 
 ```bash
@@ -68,6 +79,7 @@ conda activate env_py311
 python collect_calibration_data.py --headless --num_envs 32
 python evaluate_decomposed.py --headless --num_envs 32 --noise_level high
 python evaluate_ood.py --headless --num_envs 32 --noise_level high
+python evaluate_conformal.py --headless --num_envs 32 --noise_level high
 
 # Reach (multi-task)
 python collect_calibration_data.py --headless --num_envs 32 --task Isaac-Reach-Franka-v0
@@ -88,6 +100,7 @@ python evaluate_ood.py --headless --num_envs 32 --noise_level high --task Isaac-
 uncertainty_franka/
 ├── evaluate_decomposed.py       # Main evaluation: calibration + orthogonality + all methods
 ├── evaluate_ood.py              # OOD perturbation evaluation (mass/friction/gravity/damping)
+├── evaluate_conformal.py        # Conformal prediction coverage evaluation
 ├── collect_calibration_data.py  # Collect X_cal from clean environment
 ├── MASTER_PLAN.md               # Full paper plan with experiments and baselines
 ├── uncertainty/                 # Core uncertainty module
@@ -97,10 +110,10 @@ uncertainty_franka/
 │   ├── task_config.py           # Task-specific configs (Lift 36D, Reach 32D)
 │   ├── orthogonality.py         # OrthogonalityAnalyzer (Pearson, Spearman, HSIC, CKA)
 │   ├── perturbations.py         # Observation + Environment perturbations
-│   └── conformal.py             # Conformal prediction (planned)
+│   └── conformal.py             # Conformal prediction calibration + ACI
 ├── progress/                    # Versioned experiment journal
 │   ├── v1.0 — v1.2             # Baseline → EMA → Multi-sample
-│   └── v2.0 — v2.7             # Calibration → Estimators → Decomposed → Sweep → OOD → Multi-task → Baselines
+│   └── v2.0 — v2.8             # Calibration → Estimators → Decomposed → Sweep → OOD → Multi-task → Baselines → Conformal
 └── README.md
 ```
 
