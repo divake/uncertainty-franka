@@ -15,6 +15,7 @@ from .intervention import (
     InterventionController,
     UncertaintyDecomposer,
     DecomposedPolicy,
+    TotalUncertaintyPolicy,
 )
 
 # Perturbations
@@ -42,7 +43,7 @@ __all__ = [
     "CombinedEpistemicEstimator",
     # Intervention
     "InterventionType", "InterventionController",
-    "UncertaintyDecomposer", "DecomposedPolicy",
+    "UncertaintyDecomposer", "DecomposedPolicy", "TotalUncertaintyPolicy",
     # Perturbations
     "PerturbationType", "PerturbationConfig",
     "ObservationPerturbation", "EnvironmentPerturbation",

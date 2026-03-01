@@ -31,6 +31,8 @@ parser.add_argument("--cal_data_dir", type=str, default=None)
 parser.add_argument("--tau_a", type=float, default=0.3)
 parser.add_argument("--tau_e", type=float, default=0.7)
 parser.add_argument("--beta", type=float, default=0.3)
+parser.add_argument("--tau_total", type=float, default=0.3,
+                    help="Threshold for Total Uncertainty baseline")
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -59,7 +61,7 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uncertainty.aleatoric import AleatoricEstimator, MultiSampleVarianceEstimator
-from uncertainty.intervention import InterventionController, DecomposedPolicy
+from uncertainty.intervention import InterventionController, DecomposedPolicy, TotalUncertaintyPolicy
 
 NOISE_LEVELS = {
     "none": {"joint_pos_std": 0.0, "joint_vel_std": 0.0, "object_pos_std": 0.0},
@@ -462,6 +464,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
             print(f"{n}={stats['fraction']:.1%} ", end="")
         print()
 
+        # --- Total Uncertainty (monolithic baseline) ---
+        print(f"\n  TOTAL UNCERTAINTY:")
+        env.reset()
+        total_policy = TotalUncertaintyPolicy(
+            policy_actor=policy_nn.actor,
+            policy_obs_normalizer=policy_nn.actor_obs_normalizer,
+            msv_estimator=msv_est,
+            mahal_estimator=mahal_est,
+            env=env,
+            tau_total=args_cli.tau_total,
+            beta=args_cli.beta,
+            num_samples=args_cli.num_samples,
+            noise_params=noise_params,
+        )
+        total_res = run_ood_evaluation(
+            env, total_policy, args_cli.num_episodes, f"Total-{scenario_name}"
+        )
+        t_sr = sum(1 for r in total_res if r.success) / len(total_res)
+        t_rw = np.mean([r.reward for r in total_res])
+        total_stats = total_policy.get_stats()
+        scenario_results['total_uncertainty'] = {
+            'success_rate': t_sr, 'avg_reward': t_rw,
+            'intervention_stats': total_stats
+        }
+        print(f"    Total Uncertainty: {t_sr:.1%} success, {t_rw:.2f} reward")
+        print(f"    Intervene: {total_stats['intervene']['fraction']:.1%}, "
+              f"Normal: {total_stats['normal']['fraction']:.1%}")
+
         all_scenario_results[scenario_name] = scenario_results
 
     # Restore originals before closing
@@ -474,21 +504,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print("OOD PERTURBATION RESULTS SUMMARY")
     print(f"{'='*70}")
     print(f"  Noise: {noise_level}")
-    print(f"  Thresholds: tau_a={args_cli.tau_a}, tau_e={args_cli.tau_e}, beta={args_cli.beta}")
+    print(f"  Thresholds: tau_a={args_cli.tau_a}, tau_e={args_cli.tau_e}, beta={args_cli.beta}, tau_total={args_cli.tau_total}")
     print()
-    print(f"{'Scenario':<22} {'Vanilla':>10} {'Multi-Samp':>12} {'Decomposed':>12} {'Delta(D-MS)':>12}")
-    print("-" * 70)
+    print(f"{'Scenario':<22} {'Vanilla':>8} {'Multi-S':>8} {'Total-U':>8} {'Decomp':>8} {'D-MS':>7} {'D-TU':>7}")
+    print("-" * 72)
 
     for scenario_name, res in all_scenario_results.items():
         v = res['vanilla']['success_rate']
         m = res['multi_sample']['success_rate']
+        t = res['total_uncertainty']['success_rate']
         d = res['decomposed']['success_rate']
-        delta = (d - m) * 100
-        marker = " *" if delta > 0 else ""
-        print(f"  {scenario_name:<20} {v*100:>9.1f}% {m*100:>11.1f}% {d*100:>11.1f}% {delta:>+11.1f}%{marker}")
+        d_ms = (d - m) * 100
+        d_tu = (d - t) * 100
+        marker = ""
+        if d_ms > 0 or d_tu > 0:
+            marker = " *"
+        print(f"  {scenario_name:<20} {v*100:>7.1f}% {m*100:>7.1f}% {t*100:>7.1f}% {d*100:>7.1f}% {d_ms:>+6.1f}% {d_tu:>+6.1f}%{marker}")
 
-    print("-" * 70)
-    print("  (* = decomposed beats multi-sample)")
+    print("-" * 72)
+    print("  (* = decomposed beats multi-sample or total uncertainty)")
 
     # Save results
     output_dir = os.path.join(
@@ -518,6 +552,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
             "tau_a": args_cli.tau_a,
             "tau_e": args_cli.tau_e,
             "beta": args_cli.beta,
+            "tau_total": args_cli.tau_total,
             "num_episodes": args_cli.num_episodes,
         },
         "scenarios": all_scenario_results,

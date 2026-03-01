@@ -16,6 +16,7 @@ This folder tracks every major milestone with full parameters, results, and pape
 | [v2.2](v2.2_decomposed_evaluation.md) | Full Decomposed Evaluation | 2026-02-28 | 96.1% success, 120.68 reward (matches MS, higher reward) |
 | [v2.3](v2.3_noise_level_sweep.md) | Noise Level Sweep (Table 2) | 2026-02-28 | Decomposed beats MS at extreme noise (+3.2%) |
 | [v2.4](v2.4_ood_perturbation_testing.md) | OOD Perturbation Testing (Table 3) | 2026-02-28 | Decomposed beats MS at mass 5x (+9.0%) |
+| [v2.5](v2.5_total_uncertainty_baseline.md) | Total Uncertainty Baseline (P2) | 2026-02-28 | Decomposed beats TU in 4/6 scenarios |
 
 ## Current Best Results (HIGH noise, 100 episodes)
 

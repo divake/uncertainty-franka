@@ -333,3 +333,147 @@ class DecomposedPolicy:
     def get_intervention_stats(self) -> Dict:
         """Get intervention statistics."""
         return self.controller.get_stats()
+
+
+class TotalUncertaintyPolicy:
+    """
+    Baseline B5: Total (monolithic) uncertainty — no decomposition.
+
+    Combines u_a and u_e into a single u_total = (u_a + u_e) / 2.
+    When u_total > tau_total: applies BOTH filtering and conservative scaling.
+    Cannot distinguish between noise and OOD, so it either does everything or nothing.
+
+    This baseline proves that DECOMPOSITION adds value beyond just detecting uncertainty.
+    """
+
+    def __init__(self,
+                 policy_actor,
+                 policy_obs_normalizer,
+                 msv_estimator,
+                 mahal_estimator,
+                 env,
+                 tau_total: float = 0.5,
+                 beta: float = 0.3,
+                 num_samples: int = 5,
+                 noise_params: Dict = None,
+                 min_action_scale: float = 0.3):
+        self.actor = policy_actor
+        self.obs_normalizer = policy_obs_normalizer
+        self.msv_estimator = msv_estimator
+        self.mahal_estimator = mahal_estimator
+        self.env = env
+        self.tau_total = tau_total
+        self.beta = beta
+        self.num_samples = num_samples
+        self.noise_params = noise_params or {}
+        self.min_action_scale = min_action_scale
+        self.device = env.unwrapped.device
+
+        # Statistics
+        self.intervene_count = 0
+        self.normal_count = 0
+
+    def __call__(self, obs) -> torch.Tensor:
+        obs_tensor = self._obs_to_tensor(obs)
+
+        gt_obs = self._get_ground_truth_obs()
+        if gt_obs is None:
+            gt_obs = obs_tensor
+
+        batch_size = gt_obs.shape[0]
+        samples = []
+        for _ in range(self.num_samples):
+            sample = gt_obs.clone()
+            if self.noise_params.get("joint_pos_std", 0) > 0:
+                sample[:, 0:9] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_pos_std"]
+            if self.noise_params.get("joint_vel_std", 0) > 0:
+                sample[:, 9:18] += torch.randn(batch_size, 9, device=self.device) * self.noise_params["joint_vel_std"]
+            if self.noise_params.get("object_pos_std", 0) > 0:
+                sample[:, 18:21] += torch.randn(batch_size, 3, device=self.device) * self.noise_params["object_pos_std"]
+            samples.append(sample)
+
+        samples_tensor = torch.stack(samples, dim=0)
+
+        # Compute individual uncertainties
+        u_a = self.msv_estimator.compute_variance_torch(samples_tensor)
+        u_e = self.mahal_estimator.predict_normalized_torch(gt_obs)
+
+        # Monolithic: combine into single scalar
+        u_total = (u_a + u_e) / 2.0
+
+        # Single threshold decision: intervene or not
+        high_total = u_total > self.tau_total
+
+        # If intervening: apply BOTH filtering + conservative (can't distinguish)
+        averaged_obs = samples_tensor.mean(dim=0)
+        final_obs = obs_tensor.clone()
+        if high_total.any():
+            final_obs[high_total] = averaged_obs[high_total]
+
+        with torch.inference_mode():
+            normalized_obs = self.obs_normalizer(final_obs)
+            actions = self.actor(normalized_obs)
+
+        # Conservative scaling applied uniformly when u_total is high
+        action_scale = torch.ones(batch_size, device=self.device)
+        action_scale[high_total] = torch.clamp(
+            1.0 - self.beta * u_total[high_total],
+            min=self.min_action_scale
+        )
+        actions = actions * action_scale.unsqueeze(-1)
+
+        # Track stats
+        self.intervene_count += high_total.sum().item()
+        self.normal_count += (~high_total).sum().item()
+
+        return actions
+
+    def get_stats(self) -> Dict:
+        total = self.intervene_count + self.normal_count
+        if total == 0:
+            return {"intervene": {"count": 0, "fraction": 0.0},
+                    "normal": {"count": 0, "fraction": 0.0}}
+        return {
+            "intervene": {"count": self.intervene_count,
+                          "fraction": self.intervene_count / total},
+            "normal": {"count": self.normal_count,
+                       "fraction": self.normal_count / total},
+        }
+
+    def reset(self, dones: torch.Tensor):
+        pass
+
+    def _get_ground_truth_obs(self) -> Optional[torch.Tensor]:
+        try:
+            unwrapped = self.env.unwrapped
+            robot = unwrapped.scene.articulations["robot"]
+            joint_pos = robot.data.joint_pos - robot.data.default_joint_pos
+            joint_vel = robot.data.joint_vel - robot.data.default_joint_vel
+            obj = unwrapped.scene.rigid_objects["object"]
+            object_pos = obj.data.root_pos_w - unwrapped.scene.env_origins
+            if hasattr(unwrapped, 'command_manager'):
+                target_pose = unwrapped.command_manager.get_command("object_pose")
+            else:
+                target_pose = torch.zeros(joint_pos.shape[0], 7, device=self.device)
+                target_pose[:, 3] = 1.0
+            if hasattr(unwrapped, 'action_manager'):
+                prev_actions = unwrapped.action_manager.action
+            else:
+                prev_actions = torch.zeros(joint_pos.shape[0], 8, device=self.device)
+            return torch.cat([
+                joint_pos[:, :9], joint_vel[:, :9],
+                object_pos[:, :3], target_pose[:, :7],
+                prev_actions[:, :8]
+            ], dim=-1)
+        except Exception:
+            return None
+
+    def _obs_to_tensor(self, obs) -> torch.Tensor:
+        if hasattr(obs, 'get'):
+            return obs.get('policy', obs)
+        elif hasattr(obs, '__getitem__') and not isinstance(obs, torch.Tensor):
+            try:
+                return obs['policy']
+            except (KeyError, TypeError):
+                pass
+        return obs
