@@ -61,7 +61,10 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uncertainty.aleatoric import AleatoricEstimator, MultiSampleVarianceEstimator
-from uncertainty.intervention import InterventionController, DecomposedPolicy, TotalUncertaintyPolicy
+from uncertainty.intervention import (
+    InterventionController, DecomposedPolicy, TotalUncertaintyPolicy,
+    DeepEnsemblePolicy, MCDropoutPolicy,
+)
 from uncertainty.task_config import (
     get_task_config, get_ground_truth_obs as gt_obs_func,
     add_noise_to_samples, check_success, is_episode_success,
@@ -443,6 +446,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         scenario_results['multi_sample'] = {'success_rate': ms_sr, 'avg_reward': ms_rw}
         print(f"    Multi-Sample: {ms_sr:.1%} success, {ms_rw:.2f} reward")
 
+        # --- Deep Ensemble ---
+        print(f"\n  DEEP ENSEMBLE:")
+        env.reset()
+        de_policy = DeepEnsemblePolicy(
+            policy_actor=policy_nn.actor,
+            policy_obs_normalizer=policy_nn.actor_obs_normalizer,
+            env=env,
+            num_members=5,
+            perturbation_std=0.02,
+            uncertainty_threshold=0.1,
+            beta=args_cli.beta,
+        )
+        de_res = run_ood_evaluation(
+            env, de_policy, args_cli.num_episodes, f"DE-{scenario_name}"
+        )
+        de_sr = sum(1 for r in de_res if r.success) / len(de_res)
+        de_rw = np.mean([r.reward for r in de_res])
+        scenario_results['deep_ensemble'] = {'success_rate': de_sr, 'avg_reward': de_rw}
+        print(f"    Deep Ensemble: {de_sr:.1%} success, {de_rw:.2f} reward")
+
+        # --- MC Dropout ---
+        print(f"\n  MC DROPOUT:")
+        env.reset()
+        mcd_policy = MCDropoutPolicy(
+            policy_actor=policy_nn.actor,
+            policy_obs_normalizer=policy_nn.actor_obs_normalizer,
+            env=env,
+            dropout_p=0.1,
+            num_passes=10,
+            uncertainty_threshold=0.1,
+            beta=args_cli.beta,
+        )
+        mcd_res = run_ood_evaluation(
+            env, mcd_policy, args_cli.num_episodes, f"MCD-{scenario_name}"
+        )
+        mcd_sr = sum(1 for r in mcd_res if r.success) / len(mcd_res)
+        mcd_rw = np.mean([r.reward for r in mcd_res])
+        scenario_results['mc_dropout'] = {'success_rate': mcd_sr, 'avg_reward': mcd_rw}
+        print(f"    MC Dropout: {mcd_sr:.1%} success, {mcd_rw:.2f} reward")
+
         # --- Decomposed ---
         print(f"\n  DECOMPOSED:")
         env.reset()
@@ -522,12 +565,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"  Noise: {noise_level}")
     print(f"  Thresholds: tau_a={args_cli.tau_a}, tau_e={args_cli.tau_e}, beta={args_cli.beta}, tau_total={args_cli.tau_total}")
     print()
-    print(f"{'Scenario':<22} {'Vanilla':>8} {'Multi-S':>8} {'Total-U':>8} {'Decomp':>8} {'D-MS':>7} {'D-TU':>7}")
-    print("-" * 72)
+    print(f"{'Scenario':<22} {'Vanilla':>8} {'Multi-S':>8} {'DeepEns':>8} {'MCDrop':>8} {'Total-U':>8} {'Decomp':>8} {'D-MS':>7} {'D-TU':>7}")
+    print("-" * 96)
 
     for scenario_name, res in all_scenario_results.items():
         v = res['vanilla']['success_rate']
         m = res['multi_sample']['success_rate']
+        de = res.get('deep_ensemble', {}).get('success_rate', 0)
+        mcd = res.get('mc_dropout', {}).get('success_rate', 0)
         t = res['total_uncertainty']['success_rate']
         d = res['decomposed']['success_rate']
         d_ms = (d - m) * 100
@@ -535,9 +580,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         marker = ""
         if d_ms > 0 or d_tu > 0:
             marker = " *"
-        print(f"  {scenario_name:<20} {v*100:>7.1f}% {m*100:>7.1f}% {t*100:>7.1f}% {d*100:>7.1f}% {d_ms:>+6.1f}% {d_tu:>+6.1f}%{marker}")
+        print(f"  {scenario_name:<20} {v*100:>7.1f}% {m*100:>7.1f}% {de*100:>7.1f}% {mcd*100:>7.1f}% {t*100:>7.1f}% {d*100:>7.1f}% {d_ms:>+6.1f}% {d_tu:>+6.1f}%{marker}")
 
-    print("-" * 72)
+    print("-" * 96)
     print("  (* = decomposed beats multi-sample or total uncertainty)")
 
     # Save results

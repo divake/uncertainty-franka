@@ -367,3 +367,187 @@ class TotalUncertaintyPolicy:
             except (KeyError, TypeError):
                 pass
         return obs
+
+
+def _obs_to_tensor_fn(obs) -> torch.Tensor:
+    """Shared helper for obs conversion."""
+    if hasattr(obs, 'get'):
+        return obs.get('policy', obs)
+    elif hasattr(obs, '__getitem__') and not isinstance(obs, torch.Tensor):
+        try:
+            return obs['policy']
+        except (KeyError, TypeError):
+            pass
+    return obs
+
+
+class DeepEnsemblePolicy:
+    """
+    Baseline B3: Deep Ensemble — M weight-perturbed actor copies.
+
+    Creates M copies of the pretrained actor with Gaussian weight perturbations.
+    Action variance across ensemble members measures uncertainty.
+    When uncertainty is high, applies conservative scaling (since ensemble
+    cannot decompose into aleatoric/epistemic).
+    """
+
+    def __init__(self,
+                 policy_actor,
+                 policy_obs_normalizer,
+                 env,
+                 num_members: int = 5,
+                 perturbation_std: float = 0.02,
+                 uncertainty_threshold: float = 0.1,
+                 beta: float = 0.3,
+                 min_action_scale: float = 0.3):
+        import copy
+        self.obs_normalizer = policy_obs_normalizer
+        self.env = env
+        self.device = env.unwrapped.device
+        self.num_members = num_members
+        self.threshold = uncertainty_threshold
+        self.beta = beta
+        self.min_action_scale = min_action_scale
+
+        # Create ensemble: M copies with perturbed weights
+        self.ensemble = []
+        for i in range(num_members):
+            member = copy.deepcopy(policy_actor)
+            if i > 0:  # Keep first member as original
+                with torch.no_grad():
+                    for param in member.parameters():
+                        param.add_(torch.randn_like(param) * perturbation_std)
+            member.eval()
+            self.ensemble.append(member)
+
+        self.intervene_count = 0
+        self.normal_count = 0
+
+    def __call__(self, obs) -> torch.Tensor:
+        obs_tensor = _obs_to_tensor_fn(obs)
+
+        with torch.inference_mode():
+            normalized = self.obs_normalizer(obs_tensor)
+            actions_list = [member(normalized) for member in self.ensemble]
+            actions_stack = torch.stack(actions_list, dim=0)  # [M, batch, action_dim]
+
+        mean_action = actions_stack.mean(dim=0)
+        action_var = actions_stack.var(dim=0).mean(dim=-1)  # [batch]
+
+        high_uncertainty = action_var > self.threshold
+        action_scale = torch.ones(obs_tensor.shape[0], device=self.device)
+        if high_uncertainty.any():
+            max_var = action_var[high_uncertainty].max().clamp(min=1e-6)
+            action_scale[high_uncertainty] = torch.clamp(
+                1.0 - self.beta * (action_var[high_uncertainty] / max_var),
+                min=self.min_action_scale
+            )
+        mean_action = mean_action * action_scale.unsqueeze(-1)
+
+        self.intervene_count += high_uncertainty.sum().item()
+        self.normal_count += (~high_uncertainty).sum().item()
+        return mean_action
+
+    def get_stats(self) -> Dict:
+        total = self.intervene_count + self.normal_count
+        if total == 0:
+            return {"intervene": {"count": 0, "fraction": 0.0},
+                    "normal": {"count": 0, "fraction": 0.0}}
+        return {
+            "intervene": {"count": self.intervene_count,
+                          "fraction": self.intervene_count / total},
+            "normal": {"count": self.normal_count,
+                       "fraction": self.normal_count / total},
+        }
+
+    def reset(self, dones: torch.Tensor):
+        pass
+
+
+class MCDropoutPolicy:
+    """
+    Baseline B4: MC Dropout — dropout at inference time.
+
+    Inserts dropout layers into the actor MLP and runs M forward passes
+    with dropout enabled. Action variance across passes measures uncertainty.
+    When uncertainty is high, applies conservative scaling.
+    """
+
+    def __init__(self,
+                 policy_actor,
+                 policy_obs_normalizer,
+                 env,
+                 dropout_p: float = 0.1,
+                 num_passes: int = 10,
+                 uncertainty_threshold: float = 0.1,
+                 beta: float = 0.3,
+                 min_action_scale: float = 0.3):
+        import copy
+        self.obs_normalizer = policy_obs_normalizer
+        self.env = env
+        self.device = env.unwrapped.device
+        self.num_passes = num_passes
+        self.threshold = uncertainty_threshold
+        self.beta = beta
+        self.min_action_scale = min_action_scale
+
+        # Create actor copy with dropout inserted after each activation
+        self.dropout_actor = self._add_dropout(copy.deepcopy(policy_actor), dropout_p)
+
+        self.intervene_count = 0
+        self.normal_count = 0
+
+    def _add_dropout(self, actor, p: float) -> torch.nn.Module:
+        """Insert Dropout layers after each activation in the MLP."""
+        new_layers = []
+        for module in actor:
+            new_layers.append(module)
+            if isinstance(module, (torch.nn.ELU, torch.nn.ReLU, torch.nn.LeakyReLU,
+                                   torch.nn.GELU, torch.nn.Tanh, torch.nn.Sigmoid)):
+                new_layers.append(torch.nn.Dropout(p=p))
+        return torch.nn.Sequential(*new_layers).to(self.device)
+
+    def __call__(self, obs) -> torch.Tensor:
+        obs_tensor = _obs_to_tensor_fn(obs)
+        normalized = self.obs_normalizer(obs_tensor)
+
+        # Enable dropout for inference (key MC Dropout trick)
+        self.dropout_actor.train()
+
+        actions_list = []
+        with torch.no_grad():
+            for _ in range(self.num_passes):
+                actions_list.append(self.dropout_actor(normalized))
+        actions_stack = torch.stack(actions_list, dim=0)  # [M, batch, action_dim]
+
+        mean_action = actions_stack.mean(dim=0)
+        action_var = actions_stack.var(dim=0).mean(dim=-1)  # [batch]
+
+        high_uncertainty = action_var > self.threshold
+        action_scale = torch.ones(obs_tensor.shape[0], device=self.device)
+        if high_uncertainty.any():
+            max_var = action_var[high_uncertainty].max().clamp(min=1e-6)
+            action_scale[high_uncertainty] = torch.clamp(
+                1.0 - self.beta * (action_var[high_uncertainty] / max_var),
+                min=self.min_action_scale
+            )
+        mean_action = mean_action * action_scale.unsqueeze(-1)
+
+        self.intervene_count += high_uncertainty.sum().item()
+        self.normal_count += (~high_uncertainty).sum().item()
+        return mean_action
+
+    def get_stats(self) -> Dict:
+        total = self.intervene_count + self.normal_count
+        if total == 0:
+            return {"intervene": {"count": 0, "fraction": 0.0},
+                    "normal": {"count": 0, "fraction": 0.0}}
+        return {
+            "intervene": {"count": self.intervene_count,
+                          "fraction": self.intervene_count / total},
+            "normal": {"count": self.normal_count,
+                       "fraction": self.normal_count / total},
+        }
+
+    def reset(self, dones: torch.Tensor):
+        pass

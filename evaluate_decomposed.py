@@ -68,7 +68,10 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 # Our modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uncertainty.aleatoric import AleatoricEstimator, MultiSampleVarianceEstimator
-from uncertainty.intervention import InterventionController, DecomposedPolicy
+from uncertainty.intervention import (
+    InterventionController, DecomposedPolicy, TotalUncertaintyPolicy,
+    DeepEnsemblePolicy, MCDropoutPolicy,
+)
 from uncertainty.perturbations import (
     ObservationPerturbation, PerturbationType,
     get_perturbation_config, PERTURBATION_PRESETS
@@ -500,6 +503,81 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         ms_rw = np.mean([r.reward for r in ms_results])
         all_results['multi_sample'] = {'success_rate': ms_sr, 'avg_reward': ms_rw}
         print(f"  Multi-Sample: {ms_sr:.1%} success, {ms_rw:.2f} avg reward")
+
+        # --- Deep Ensemble (B3) ---
+        print(f"\n{'='*60}")
+        print("EVALUATING: DEEP ENSEMBLE (B3)")
+        print(f"{'='*60}")
+        env.reset()
+
+        de_policy = DeepEnsemblePolicy(
+            policy_actor=policy_nn.actor,
+            policy_obs_normalizer=policy_nn.actor_obs_normalizer,
+            env=env,
+            num_members=5,
+            perturbation_std=0.02,
+            uncertainty_threshold=0.1,
+            beta=args_cli.beta,
+        )
+        de_results = run_evaluation(env, de_policy, args_cli.num_episodes, "DeepEnsemble")
+
+        de_sr = sum(1 for r in de_results if r.success) / len(de_results)
+        de_rw = np.mean([r.reward for r in de_results])
+        all_results['deep_ensemble'] = {'success_rate': de_sr, 'avg_reward': de_rw}
+        de_stats = de_policy.get_stats()
+        print(f"  Deep Ensemble: {de_sr:.1%} success, {de_rw:.2f} avg reward")
+        print(f"  Intervention: {de_stats['intervene']['fraction']:.1%} conservative, {de_stats['normal']['fraction']:.1%} normal")
+
+        # --- MC Dropout (B4) ---
+        print(f"\n{'='*60}")
+        print("EVALUATING: MC DROPOUT (B4)")
+        print(f"{'='*60}")
+        env.reset()
+
+        mcd_policy = MCDropoutPolicy(
+            policy_actor=policy_nn.actor,
+            policy_obs_normalizer=policy_nn.actor_obs_normalizer,
+            env=env,
+            dropout_p=0.1,
+            num_passes=10,
+            uncertainty_threshold=0.1,
+            beta=args_cli.beta,
+        )
+        mcd_results = run_evaluation(env, mcd_policy, args_cli.num_episodes, "MCDropout")
+
+        mcd_sr = sum(1 for r in mcd_results if r.success) / len(mcd_results)
+        mcd_rw = np.mean([r.reward for r in mcd_results])
+        all_results['mc_dropout'] = {'success_rate': mcd_sr, 'avg_reward': mcd_rw}
+        mcd_stats = mcd_policy.get_stats()
+        print(f"  MC Dropout: {mcd_sr:.1%} success, {mcd_rw:.2f} avg reward")
+        print(f"  Intervention: {mcd_stats['intervene']['fraction']:.1%} conservative, {mcd_stats['normal']['fraction']:.1%} normal")
+
+        # --- Total Uncertainty (B5) ---
+        print(f"\n{'='*60}")
+        print("EVALUATING: TOTAL UNCERTAINTY (B5)")
+        print(f"{'='*60}")
+        env.reset()
+
+        tu_policy = TotalUncertaintyPolicy(
+            policy_actor=policy_nn.actor,
+            policy_obs_normalizer=policy_nn.actor_obs_normalizer,
+            msv_estimator=msv_est,
+            mahal_estimator=mahal_est,
+            env=env,
+            tau_total=args_cli.tau_a,
+            beta=args_cli.beta,
+            num_samples=args_cli.num_samples,
+            noise_params=noise_params,
+            task_cfg=_task_cfg,
+        )
+        tu_results = run_evaluation(env, tu_policy, args_cli.num_episodes, "TotalUncert")
+
+        tu_sr = sum(1 for r in tu_results if r.success) / len(tu_results)
+        tu_rw = np.mean([r.reward for r in tu_results])
+        all_results['total_uncertainty'] = {'success_rate': tu_sr, 'avg_reward': tu_rw}
+        tu_stats = tu_policy.get_stats()
+        print(f"  Total Uncertainty: {tu_sr:.1%} success, {tu_rw:.2f} avg reward")
+        print(f"  Intervention: {tu_stats['intervene']['fraction']:.1%} intervene, {tu_stats['normal']['fraction']:.1%} normal")
 
     # --- Decomposed (Ours) ---
     print(f"\n{'='*60}")

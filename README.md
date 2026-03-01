@@ -16,13 +16,18 @@ Tested on Isaac Lab's Franka tasks: **Lift Cube** and **Reach**.
 
 ## Key Results
 
-### Table 1: Noise Robustness (HIGH noise, 100 episodes)
+### Table 1: All Methods Comparison (HIGH noise, 100 episodes, Lift)
 
 | Method | Success Rate | Avg Reward |
 |---|---|---|
 | Vanilla | 58.0% | 45.85 |
+| Deep Ensemble (B3) | 45.0% | 25.62 |
+| MC Dropout (B4) | 53.0% | 29.67 |
 | Multi-Sample Only | 96.1% | 119.16 |
-| **Decomposed (Ours)** | **96.1%** | **120.68** |
+| Total Uncertainty | 93.0% | 102.74 |
+| **Decomposed (Ours)** | **93.0%** | **117.11** |
+
+Deep Ensemble and MC Dropout perform **worse than vanilla** because action variance conflates noise with uncertainty, causing ~100% false conservative scaling.
 
 ### Table 2: Noise Level Ablation
 
@@ -36,12 +41,14 @@ Tested on Isaac Lab's Franka tasks: **Lift Cube** and **Reach**.
 
 ### Table 3: OOD Perturbation — Lift (HIGH noise + OOD)
 
-| Scenario | Vanilla | Multi-Sample | Total Uncert. | **Decomposed** | D-TU |
-|---|---|---|---|---|---|
-| Mass 2x | 52.0% | 98.0% | 95.0% | **97.0%** | **+2.0%** |
-| Mass 5x | 41.2% | 78.2% | 78.0% | 77.7% | -0.3% |
-| Friction 0.5x | 42.0% | 95.3% | 86.0% | **96.0%** | **+10.0%** |
-| Gravity 1.5x | 67.0% | 95.3% | 92.0% | **96.1%** | **+4.1%** |
+| Scenario | Vanilla | DeepEns | MCDrop | Multi-S | Total-U | **Decomposed** | D-TU |
+|---|---|---|---|---|---|---|---|
+| Mass 2x | 52.0% | 40.0% | 51.0% | 98.0% | 87.0% | **95.3%** | **+8.3%** |
+| Mass 5x | 35.0% | 19.0% | 32.0% | 82.2% | 62.0% | **76.0%** | **+14.0%** |
+| Mass 10x | 2.0% | 2.0% | 2.0% | 18.4% | 14.0% | 15.0% | +1.0% |
+| Friction 0.5x | 48.0% | 56.0% | 44.0% | 96.1% | 88.0% | **95.0%** | **+7.0%** |
+| Friction 0.2x | 49.0% | 38.6% | 47.0% | 94.0% | 92.0% | 90.6% | -1.4% |
+| Gravity 1.5x | 58.0% | 55.5% | 55.5% | 96.1% | 89.1% | **97.7%** | **+8.6%** |
 
 ### Table 4: Cross-Task — Reach (HIGH noise + OOD)
 
@@ -86,14 +93,14 @@ uncertainty_franka/
 ├── uncertainty/                 # Core uncertainty module
 │   ├── aleatoric.py             # MSV + Mahalanobis estimators
 │   ├── epistemic.py             # Spectral/Repulsive estimators (not used — 36-dim too low)
-│   ├── intervention.py          # InterventionController + DecomposedPolicy + TotalUncertaintyPolicy
+│   ├── intervention.py          # All policies: Decomposed, TotalUncertainty, DeepEnsemble, MCDropout
 │   ├── task_config.py           # Task-specific configs (Lift 36D, Reach 32D)
 │   ├── orthogonality.py         # OrthogonalityAnalyzer (Pearson, Spearman, HSIC, CKA)
 │   ├── perturbations.py         # Observation + Environment perturbations
 │   └── conformal.py             # Conformal prediction (planned)
 ├── progress/                    # Versioned experiment journal
 │   ├── v1.0 — v1.2             # Baseline → EMA → Multi-sample
-│   └── v2.0 — v2.6             # Calibration → Estimators → Decomposed → Sweep → OOD → Multi-task
+│   └── v2.0 — v2.7             # Calibration → Estimators → Decomposed → Sweep → OOD → Multi-task → Baselines
 └── README.md
 ```
 

@@ -16,6 +16,8 @@ from .intervention import (
     UncertaintyDecomposer,
     DecomposedPolicy,
     TotalUncertaintyPolicy,
+    DeepEnsemblePolicy,
+    MCDropoutPolicy,
 )
 
 # Perturbations
@@ -51,6 +53,7 @@ __all__ = [
     # Intervention
     "InterventionType", "InterventionController",
     "UncertaintyDecomposer", "DecomposedPolicy", "TotalUncertaintyPolicy",
+    "DeepEnsemblePolicy", "MCDropoutPolicy",
     # Perturbations
     "PerturbationType", "PerturbationConfig",
     "ObservationPerturbation", "EnvironmentPerturbation",
