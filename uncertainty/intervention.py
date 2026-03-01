@@ -1,12 +1,15 @@
 """
 Uncertainty Decomposition and Targeted Intervention Controller
 
-The core of the paper: different uncertainty types get different fixes.
+CVPR-consistent decomposition (arXiv:2511.12389):
+  - σ_alea = Mahalanobis distance from calibration distribution (SAME as CVPR Sec 3.2)
+  - σ_epis = ε_knn + ε_rank (local state-space statistics, adapted from CVPR Sec 3.1)
 
-- High aleatoric (noisy observation): Multi-sample averaging
-- High epistemic (unfamiliar state): Conservative action scaling
-- Both high: Filter + conservative
-- Both low: Normal action
+Targeted intervention (IROS contribution):
+  - High σ_alea (noisy/degraded observation): Multi-sample averaging to filter noise
+  - High σ_epis (unfamiliar state): Conservative action scaling to reduce risk
+  - Both high: Filter + conservative (maximum caution)
+  - Both low: Normal action
 
 For IROS 2026: Decomposed Uncertainty-Aware Control for Robust Robot Manipulation
 """
@@ -176,31 +179,39 @@ class InterventionController:
 
 class DecomposedPolicy:
     """
-    Full decomposed uncertainty-aware policy.
+    Full decomposed uncertainty-aware policy (CVPR-consistent).
 
     Pipeline per step:
-      1. Take N noisy readings from ground truth
-      2. u_aleatoric = variance across N samples (pure noise signal)
-      3. u_epistemic = Mahalanobis distance of ground truth from calibration
-      4. Controller decides intervention based on (u_a, u_e)
-      5. If high aleatoric: use averaged observation (filtered)
-      6. If high epistemic: scale down actions (conservative)
+      1. Get ground truth observation from simulator
+      2. Generate N noisy readings by adding sensor noise to ground truth
+      3. σ_alea = Mahalanobis(noisy_obs) — distance of noisy observation from
+         calibration distribution (SAME formula as CVPR Sec 3.2)
+      4. σ_epis = ε_knn + ε_rank(gt_obs) — state novelty on GROUND TRUTH,
+         immune to sensor noise (adapted from CVPR Sec 3.1)
+      5. Controller decides targeted intervention:
+         - High σ_alea: use averaged observation (multi-sample filtering = denoising)
+         - High σ_epis: scale down actions (conservative behavior)
     """
 
     def __init__(self,
                  policy_actor,
                  policy_obs_normalizer,
-                 msv_estimator,
-                 mahal_estimator,
+                 alea_estimator,
+                 epis_estimator,
                  controller: InterventionController,
                  env,
                  num_samples: int = 5,
                  noise_params: Dict = None,
                  task_cfg: TaskObsConfig = None):
+        """
+        Args:
+            alea_estimator: AleatoricEstimator (Mahalanobis) — fitted on calibration data
+            epis_estimator: CVPREpistemicEstimator (ε_knn + ε_rank) — fitted on calibration data
+        """
         self.actor = policy_actor
         self.obs_normalizer = policy_obs_normalizer
-        self.msv_estimator = msv_estimator
-        self.mahal_estimator = mahal_estimator
+        self.alea_estimator = alea_estimator
+        self.epis_estimator = epis_estimator
         self.controller = controller
         self.env = env
         self.num_samples = num_samples
@@ -225,11 +236,17 @@ class DecomposedPolicy:
 
         samples_tensor = torch.stack(samples, dim=0)  # [N, batch, obs_dim]
 
-        u_a = self.msv_estimator.compute_variance_torch(samples_tensor)
-        u_e = self.mahal_estimator.predict_normalized_torch(gt_obs)
+        # σ_alea = Mahalanobis on the noisy observation (CVPR Sec 3.2)
+        # High when observation is far from calibration distribution (noise, occlusion, etc.)
+        u_a = self.alea_estimator.predict_normalized_torch(obs_tensor)
+
+        # σ_epis = ε_knn + ε_rank on GROUND TRUTH (CVPR Sec 3.1 adapted)
+        # High when the true state is novel/OOD. Immune to sensor noise by design.
+        u_e = self.epis_estimator.predict_torch(gt_obs)
 
         need_filter, action_scale, intervention_type = self.controller.decide(u_a, u_e)
 
+        # Multi-sample averaging = denoising mechanism (triggered by high σ_alea)
         averaged_obs = samples_tensor.mean(dim=0)
         final_obs = obs_tensor.clone()
         if need_filter.any():
@@ -239,6 +256,7 @@ class DecomposedPolicy:
             normalized_obs = self.obs_normalizer(final_obs)
             actions = self.actor(normalized_obs)
 
+        # Conservative scaling (triggered by high σ_epis)
         actions = actions * action_scale.unsqueeze(-1)
 
         return actions
@@ -264,11 +282,12 @@ class DecomposedPolicy:
 
 class TotalUncertaintyPolicy:
     """
-    Baseline B5: Total (monolithic) uncertainty — no decomposition.
+    Baseline: Total (monolithic) uncertainty — no decomposition.
 
-    Combines u_a and u_e into a single u_total = (u_a + u_e) / 2.
-    When u_total > tau_total: applies BOTH filtering and conservative scaling.
-    Cannot distinguish between noise and OOD, so it either does everything or nothing.
+    Uses the SAME signals as Decomposed (σ_alea + σ_epis) but combines them:
+      σ_total = sqrt(σ_alea² + σ_epis²)
+    When σ_total > τ_total: applies BOTH filtering AND conservative scaling.
+    Cannot distinguish between noise and OOD, so it over-intervenes.
 
     This baseline proves that DECOMPOSITION adds value beyond just detecting uncertainty.
     """
@@ -276,8 +295,8 @@ class TotalUncertaintyPolicy:
     def __init__(self,
                  policy_actor,
                  policy_obs_normalizer,
-                 msv_estimator,
-                 mahal_estimator,
+                 alea_estimator,
+                 epis_estimator,
                  env,
                  tau_total: float = 0.5,
                  beta: float = 0.3,
@@ -287,8 +306,8 @@ class TotalUncertaintyPolicy:
                  task_cfg: TaskObsConfig = None):
         self.actor = policy_actor
         self.obs_normalizer = policy_obs_normalizer
-        self.msv_estimator = msv_estimator
-        self.mahal_estimator = mahal_estimator
+        self.alea_estimator = alea_estimator
+        self.epis_estimator = epis_estimator
         self.env = env
         self.tau_total = tau_total
         self.beta = beta
@@ -316,12 +335,15 @@ class TotalUncertaintyPolicy:
 
         samples_tensor = torch.stack(samples, dim=0)
 
-        u_a = self.msv_estimator.compute_variance_torch(samples_tensor)
-        u_e = self.mahal_estimator.predict_normalized_torch(gt_obs)
+        # Same signals as Decomposed
+        u_a = self.alea_estimator.predict_normalized_torch(obs_tensor)
+        u_e = self.epis_estimator.predict_torch(gt_obs)
 
-        u_total = (u_a + u_e) / 2.0
+        # Combine into single σ_total (same as CVPR's σ_comb)
+        u_total = torch.sqrt(u_a ** 2 + u_e ** 2)
         high_total = u_total > self.tau_total
 
+        # When high: apply BOTH interventions (cannot distinguish)
         averaged_obs = samples_tensor.mean(dim=0)
         final_obs = obs_tensor.clone()
         if high_total.any():

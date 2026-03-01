@@ -70,6 +70,7 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uncertainty.aleatoric import AleatoricEstimator, MultiSampleVarianceEstimator
+from uncertainty.epistemic_cvpr import CVPREpistemicEstimator, ZERO_VAR_DIMS_LIFT
 from uncertainty.intervention import InterventionController, DecomposedPolicy
 from uncertainty.conformal import ConformalCalibrator, ConformalResult
 from uncertainty.task_config import (
@@ -130,7 +131,7 @@ class EpisodeUncertaintyData:
 
 
 def collect_vanilla_with_uncertainty(
-    env, base_policy, policy_nn, msv_est, mahal_est, noise_params,
+    env, base_policy, policy_nn, alea_est, epis_est, noise_params,
     num_episodes: int, label: str,
 ) -> List[EpisodeUncertaintyData]:
     """
@@ -172,8 +173,8 @@ def collect_vanilla_with_uncertainty(
             samples.append(sample)
         samples_tensor = torch.stack(samples, dim=0)
 
-        u_a = msv_est.compute_variance_torch(samples_tensor)
-        u_e = mahal_est.predict_normalized_torch(gt_obs)
+        u_a = alea_est.predict_normalized_torch(obs_tensor)
+        u_e = epis_est.predict_torch(gt_obs)
 
         env_u_a_sum += u_a
         env_u_e_sum += u_e
@@ -224,7 +225,7 @@ def collect_vanilla_with_uncertainty(
 
 
 def run_conformal_evaluation(
-    env, policy_nn, base_policy, msv_est, mahal_est, noise_params,
+    env, policy_nn, base_policy, alea_est, epis_est, noise_params,
     controller, episodes_data: List[EpisodeUncertaintyData],
     tau_a_cp: float, tau_e_cp: float,
     num_episodes: int, label: str,
@@ -276,8 +277,8 @@ def run_conformal_evaluation(
             samples.append(sample)
         samples_tensor = torch.stack(samples, dim=0)
 
-        u_a = msv_est.compute_variance_torch(samples_tensor)
-        u_e = mahal_est.predict_normalized_torch(gt_obs)
+        u_a = alea_est.predict_normalized_torch(obs_tensor)
+        u_e = epis_est.predict_torch(gt_obs)
 
         if mode == "decomposed":
             # Targeted intervention based on conformal thresholds
@@ -416,14 +417,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         X_cal = np.load(os.path.join(cal_dir, "X_cal.npy"))
     print(f"  Estimator calibration data: {X_cal.shape}")
 
-    # Fit estimators
-    mahal_est = AleatoricEstimator(reg_lambda=1e-4)
-    mahal_est.fit(X_cal, verbose=True)
-    mahal_est.to_torch(env.unwrapped.device)
+    # Fit estimators — CVPR-consistent
+    alea_est = AleatoricEstimator(reg_lambda=1e-4)
+    alea_est.fit(X_cal, verbose=True)
+    alea_est.to_torch(env.unwrapped.device)
 
-    msv_est = MultiSampleVarianceEstimator()
-    msv_est.calibrate(X_cal, noise_params, n_samples=args_cli.num_samples,
-                      n_trials=500, verbose=True)
+    zero_var_dims = ZERO_VAR_DIMS_LIFT if "Lift" in args_cli.task else None
+    epis_est = CVPREpistemicEstimator(k_knn=20, k_rank=50, zero_var_dims=zero_var_dims)
+    epis_est.fit(X_cal, verbose=True)
 
     # =====================================================================
     # PHASE 1: Collect VANILLA episodes with uncertainty scores
@@ -436,7 +437,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
 
     total_episodes = args_cli.cal_episodes + args_cli.test_episodes
     all_episodes = collect_vanilla_with_uncertainty(
-        env, base_policy, policy_nn, msv_est, mahal_est, noise_params,
+        env, base_policy, policy_nn, alea_est, epis_est, noise_params,
         total_episodes, "Vanilla+Uncert",
     )
 
@@ -569,7 +570,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"  VANILLA (No CP):")
     env.reset()
     vanilla_res = run_conformal_evaluation(
-        env, policy_nn, base_policy, msv_est, mahal_est, noise_params,
+        env, policy_nn, base_policy, alea_est, epis_est, noise_params,
         None, test_episodes, 999.0, 999.0,
         args_cli.test_episodes, "Vanilla", mode="none",
     )
@@ -579,7 +580,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"\n  TOTAL UNCERTAINTY CP:")
     env.reset()
     total_res = run_conformal_evaluation(
-        env, policy_nn, base_policy, msv_est, mahal_est, noise_params,
+        env, policy_nn, base_policy, alea_est, epis_est, noise_params,
         None, test_episodes, total_tau, 999.0,
         args_cli.test_episodes, "Total-CP", mode="total",
     )
@@ -589,7 +590,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"\n  DECOMPOSED CP:")
     env.reset()
     decomp_res = run_conformal_evaluation(
-        env, policy_nn, base_policy, msv_est, mahal_est, noise_params,
+        env, policy_nn, base_policy, alea_est, epis_est, noise_params,
         None, test_episodes, decomp_tau_a, decomp_tau_e,
         args_cli.test_episodes, "Decomp-CP", mode="decomposed",
     )
@@ -599,7 +600,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     print(f"\n  DECOMPOSED (fixed tau_a={args_cli.tau_a}, tau_e={args_cli.tau_e}):")
     env.reset()
     fixed_res = run_conformal_evaluation(
-        env, policy_nn, base_policy, msv_est, mahal_est, noise_params,
+        env, policy_nn, base_policy, alea_est, epis_est, noise_params,
         None, test_episodes, args_cli.tau_a, args_cli.tau_e,
         args_cli.test_episodes, "Decomp-Fixed", mode="decomposed",
     )

@@ -61,6 +61,7 @@ from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_che
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from uncertainty.aleatoric import AleatoricEstimator, MultiSampleVarianceEstimator
+from uncertainty.epistemic_cvpr import CVPREpistemicEstimator, ZERO_VAR_DIMS_LIFT
 from uncertainty.intervention import (
     InterventionController, DecomposedPolicy, TotalUncertaintyPolicy,
     DeepEnsemblePolicy, MCDropoutPolicy,
@@ -368,9 +369,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         X_cal = np.load(os.path.join(cal_dir, "X_cal.npy"))
     print(f"  Calibration data: {X_cal.shape}")
 
-    # Fit estimators
-    mahal_est = AleatoricEstimator(reg_lambda=1e-4)
-    mahal_est.fit(X_cal, verbose=False)
+    # Fit estimators — CVPR-consistent
+    # σ_alea = Mahalanobis distance (CVPR Sec 3.2)
+    alea_est = AleatoricEstimator(reg_lambda=1e-4)
+    alea_est.fit(X_cal, verbose=False)
+
+    # σ_epis = ε_knn + ε_rank (CVPR Sec 3.1 adapted)
+    zero_var_dims = ZERO_VAR_DIMS_LIFT if "Lift" in args_cli.task else None
+    epis_est = CVPREpistemicEstimator(k_knn=20, k_rank=50, zero_var_dims=zero_var_dims)
+    epis_est.fit(X_cal, verbose=False)
 
     msv_est = MultiSampleVarianceEstimator()
     msv_est.calibrate(X_cal, noise_params, n_samples=args_cli.num_samples, n_trials=500, verbose=False)
@@ -400,7 +407,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
     except AttributeError:
         policy_nn = runner.alg.actor_critic
 
-    mahal_est.to_torch(env.unwrapped.device)
+    alea_est.to_torch(env.unwrapped.device)
 
     # Snapshot original PhysX properties BEFORE any perturbations
     env.reset()
@@ -495,8 +502,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         decomp_policy = DecomposedPolicy(
             policy_actor=policy_nn.actor,
             policy_obs_normalizer=policy_nn.actor_obs_normalizer,
-            msv_estimator=msv_est,
-            mahal_estimator=mahal_est,
+            alea_estimator=alea_est,
+            epis_estimator=epis_est,
             controller=controller,
             env=env,
             num_samples=args_cli.num_samples,
@@ -528,8 +535,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg, agent_cfg: RslRlOnPolic
         total_policy = TotalUncertaintyPolicy(
             policy_actor=policy_nn.actor,
             policy_obs_normalizer=policy_nn.actor_obs_normalizer,
-            msv_estimator=msv_est,
-            mahal_estimator=mahal_est,
+            alea_estimator=alea_est,
+            epis_estimator=epis_est,
             env=env,
             tau_total=args_cli.tau_total,
             beta=args_cli.beta,

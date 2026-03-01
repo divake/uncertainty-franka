@@ -54,6 +54,12 @@ outputs/
 # Results (JSON, reproducible via evaluate scripts)
 results/
 
+# Paper PDFs (large, not source code)
+*.pdf
+
+# Generated figures (reproducible via plot_figures.py)
+figures/
+
 # OS
 .DS_Store
 Thumbs.db

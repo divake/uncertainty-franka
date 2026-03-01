@@ -1,8 +1,19 @@
 """
-Epistemic Uncertainty Estimation via Spectral Collapse + Repulsive Void Detection
+LEGACY — NOT USED IN CURRENT PIPELINE (v3.0+)
 
-Ported from MOT/tracking uncertainty code to 36-dim robot observation space.
-Supports both NumPy (offline fitting) and PyTorch (online inference via precomputation).
+Epistemic Uncertainty Estimation via Spectral Collapse + Repulsive Void Detection.
+This was the v2.x epistemic estimator, REPLACED by epistemic_cvpr.py in v3.0.
+
+Kept for reference only. The current CVPR-consistent pipeline uses:
+  σ_epis = ε_knn + ε_rank  (see epistemic_cvpr.py)
+
+Reason for replacement:
+  - SpectralEpistemicEstimator computed on NOISY observations, so it was not
+    immune to sensor noise — violating the decomposition requirement.
+  - RepulsiveEpistemicEstimator used a Coulomb-like force model that was
+    slow and not grounded in the CVPR paper methodology.
+  - The new epistemic_cvpr.py uses GROUND TRUTH observations, achieving
+    perfect noise isolation (Δ=0.000000 under noise).
 
 For IROS 2026: Decomposed Uncertainty-Aware Control for Robust Robot Manipulation
 """

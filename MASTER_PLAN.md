@@ -1,5 +1,9 @@
 # MASTER PLAN: Uncertainty Decomposition for Robust Robot Manipulation
 
+> **NOTE (v3.0):** This plan was written for v1.x/v2.x (MSV + Mahalanobis pipeline).
+> The current CVPR-consistent pipeline (v3.0) is documented in `cvpr_iros_plan.md`
+> and `progress/v3.0_cvpr_consistent_rewrite.md`. Kept for historical reference.
+
 **Paper Title**: "Decomposed Uncertainty-Aware Control for Robust Robot Manipulation"
 **Venue**: IROS 2026
 **Repository**: https://github.com/divake/uncertainty-franka
