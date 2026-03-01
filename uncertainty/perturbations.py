@@ -238,11 +238,10 @@ class EnvironmentPerturbation:
         """E3: Modify object mass (heavier/lighter object)."""
         unwrapped = env.unwrapped
         obj = unwrapped.scene.rigid_objects["object"]
-        # Modify mass through PhysX API
         try:
-            obj.root_physx_view.set_masses(
-                obj.root_physx_view.get_masses() * scale
-            )
+            masses = obj.root_physx_view.get_masses()
+            indices = torch.arange(masses.shape[0], dtype=torch.int32, device="cpu")
+            obj.root_physx_view.set_masses(masses * scale, indices)
         except Exception as e:
             print(f"Warning: Could not modify mass: {e}")
 
@@ -256,7 +255,8 @@ class EnvironmentPerturbation:
             materials = obj.root_physx_view.get_material_properties()
             materials[:, :, 0] *= scale  # static friction
             materials[:, :, 1] *= scale  # dynamic friction
-            obj.root_physx_view.set_material_properties(materials)
+            indices = torch.arange(materials.shape[0], dtype=torch.int32, device="cpu")
+            obj.root_physx_view.set_material_properties(materials, indices)
         except Exception as e:
             print(f"Warning: Could not modify friction: {e}")
 
@@ -265,10 +265,12 @@ class EnvironmentPerturbation:
         """E6: Modify gravity vector."""
         unwrapped = env.unwrapped
         try:
-            sim = unwrapped.sim
-            gravity = sim.cfg.gravity
+            import carb
+            from isaaclab.sim import SimulationContext
+            sim_ctx = SimulationContext.instance()
+            gravity = sim_ctx.cfg.gravity
             new_gravity = [g * scale for g in gravity]
-            sim.set_gravity(new_gravity)
+            sim_ctx.physics_sim_view.set_gravity(carb.Float3(*new_gravity))
         except Exception as e:
             print(f"Warning: Could not modify gravity: {e}")
 

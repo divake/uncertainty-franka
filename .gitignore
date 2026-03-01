@@ -51,6 +51,9 @@ calibration_data/
 # Hydra outputs (auto-generated config snapshots)
 outputs/
 
+# Results (JSON, reproducible via evaluate scripts)
+results/
+
 # OS
 .DS_Store
 Thumbs.db

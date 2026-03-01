@@ -14,6 +14,8 @@ This folder tracks every major milestone with full parameters, results, and pape
 | [v2.0](v2.0_calibration_data_collection.md) | Calibration Data Collection | 2026-02-28 | 56K obs from 224 successful episodes |
 | [v2.1](v2.1_uncertainty_estimator_exploration.md) | Estimator Exploration | 2026-02-28 | MSV + Mahalanobis = orthogonal by construction |
 | [v2.2](v2.2_decomposed_evaluation.md) | Full Decomposed Evaluation | 2026-02-28 | 96.1% success, 120.68 reward (matches MS, higher reward) |
+| [v2.3](v2.3_noise_level_sweep.md) | Noise Level Sweep (Table 2) | 2026-02-28 | Decomposed beats MS at extreme noise (+3.2%) |
+| [v2.4](v2.4_ood_perturbation_testing.md) | OOD Perturbation Testing (Table 3) | 2026-02-28 | Decomposed beats MS at mass 5x (+9.0%) |
 
 ## Current Best Results (HIGH noise, 100 episodes)
 

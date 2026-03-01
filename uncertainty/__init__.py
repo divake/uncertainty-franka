@@ -1,14 +1,6 @@
 # Uncertainty estimation modules for robot manipulation
 # IROS 2026: Decomposed Uncertainty-Aware Control
 
-# Legacy
-from .ensemble_policy import (
-    EnsemblePolicy,
-    MCDropoutPolicy,
-    UncertaintyMetrics,
-    create_ensemble_from_checkpoint,
-)
-
 # Core decomposition
 from .aleatoric import AleatoricEstimator, MultiSampleVarianceEstimator
 from .epistemic import (
@@ -43,9 +35,6 @@ from .conformal import (
 )
 
 __all__ = [
-    # Legacy
-    "EnsemblePolicy", "MCDropoutPolicy", "UncertaintyMetrics",
-    "create_ensemble_from_checkpoint",
     # Aleatoric
     "AleatoricEstimator", "MultiSampleVarianceEstimator",
     # Epistemic
