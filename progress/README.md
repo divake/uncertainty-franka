@@ -1,0 +1,31 @@
+# Progress Journal
+
+**Paper:** Decomposed Uncertainty-Aware Control for Robust Robot Manipulation (IROS 2026)
+
+This folder tracks every major milestone with full parameters, results, and paper-ready values.
+
+## Version History
+
+| Version | Title | Date | Key Result |
+|---------|-------|------|------------|
+| [v1.0](v1.0_baseline_noise_impact.md) | Baseline: Noise Impact | 2026-02-27 | High noise drops success 100% → 58% |
+| [v1.1](v1.1_observation_filtering.md) | EMA Observation Filtering | 2026-02-27 | EMA barely helps, can hurt (-12.5%) |
+| [v1.2](v1.2_multi_sample_averaging.md) | Multi-Sample Averaging | 2026-02-27 | 58% → 96.1% under high noise |
+| [v2.0](v2.0_calibration_data_collection.md) | Calibration Data Collection | 2026-02-28 | 56K obs from 224 successful episodes |
+| [v2.1](v2.1_uncertainty_estimator_exploration.md) | Estimator Exploration | 2026-02-28 | MSV + Mahalanobis = orthogonal by construction |
+| [v2.2](v2.2_decomposed_evaluation.md) | Full Decomposed Evaluation | 2026-02-28 | 96.1% success, 120.68 reward (matches MS, higher reward) |
+
+## Current Best Results (HIGH noise, 100 episodes)
+
+| Method              | Success Rate | Avg Reward |
+|---------------------|-------------|------------|
+| Vanilla             | 58.0%       | 45.85      |
+| Multi-Sample Only   | 96.1%       | 119.16     |
+| **Decomposed (Ours)** | **96.1%** | **120.68** |
+
+## Current Best Parameters
+```
+tau_a = 0.3, tau_e = 0.7, beta = 0.3, N = 5
+Aleatoric: Multi-Sample Variance (MSV)
+Epistemic: Mahalanobis distance (reg_lambda=1e-4)
+```

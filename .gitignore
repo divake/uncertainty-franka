@@ -36,12 +36,20 @@ venv/
 *.log
 logs/
 
-# Results (keep structure but ignore large files)
-results/*/*.pt
-results/*/*.ckpt
+# Large binary files — keep out of git
+*.npy
+*.pt
+*.ckpt
+*.pth
 
-# Isaac Sim/Lab cache
+# Isaac Sim/Lab cache and pretrained models
 .pretrained_checkpoints/
+
+# Calibration data (large .npy files, reproducible via collect_calibration_data.py)
+calibration_data/
+
+# Hydra outputs (auto-generated config snapshots)
+outputs/
 
 # OS
 .DS_Store

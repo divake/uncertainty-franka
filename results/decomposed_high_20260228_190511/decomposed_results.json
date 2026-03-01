@@ -1,0 +1,72 @@
+{
+  "config": {
+    "task": "Isaac-Lift-Cube-Franka-v0",
+    "noise_level": "high",
+    "noise_params": {
+      "joint_pos_std": 0.02,
+      "joint_vel_std": 0.1,
+      "object_pos_std": 0.1
+    },
+    "num_samples": 5,
+    "tau_a": 0.3,
+    "tau_e": 0.7,
+    "beta": 0.3,
+    "num_episodes": 100,
+    "seed": 42
+  },
+  "results": {
+    "vanilla": {
+      "success_rate": 0.58,
+      "avg_reward": 45.848631231188776
+    },
+    "multi_sample": {
+      "success_rate": 0.9609375,
+      "avg_reward": 119.16283847671002
+    },
+    "decomposed": {
+      "success_rate": 0.9609375,
+      "avg_reward": 120.67938455566764
+    }
+  },
+  "orthogonality": {
+    "pearson_r": 0.003723137959926644,
+    "pearson_abs_r": 0.003723137959926644,
+    "pearson_p": 0.8553462188162377,
+    "pearson_pass": true,
+    "spearman_rho": 0.003850796497831069,
+    "spearman_abs_rho": 0.003850796497831069,
+    "spearman_p": 0.8504438380767685,
+    "spearman_pass": true,
+    "hsic_stat": 1.6525638392326868e-05,
+    "hsic_p": 0.995,
+    "hsic_pass": true,
+    "cka": 0.27809326506012105,
+    "cka_pass": false,
+    "all_pass": false,
+    "behavioral_isolation": {
+      "noise_isolation_ratio": 436511.21854782104,
+      "ood_isolation_ratio": 553691.0103869857,
+      "noise_pass": true,
+      "ood_pass": true,
+      "overall_pass": true
+    }
+  },
+  "intervention_stats": {
+    "normal": {
+      "count": 0,
+      "fraction": 0.0
+    },
+    "filter": {
+      "count": 29143,
+      "fraction": 0.91071875
+    },
+    "conservative": {
+      "count": 0,
+      "fraction": 0.0
+    },
+    "filter_conservative": {
+      "count": 2857,
+      "fraction": 0.08928125
+    }
+  }
+}
