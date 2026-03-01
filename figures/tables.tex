@@ -1,0 +1,80 @@
+% =========================================
+% Table 1: All Methods Comparison
+% =========================================
+\begin{table}[t]
+\centering
+\caption{Noise Robustness: HIGH noise, 100 episodes, Lift Cube}
+\label{tab:noise_robustness}
+\begin{tabular}{lcc}
+\toprule
+Method & Success Rate & Avg Reward \\
+\midrule
+Vanilla & 58.0\% & 45.85 \\
+Deep Ensemble & 45.0\% & 25.62 \\
+MC Dropout & 53.0\% & 29.67 \\
+Multi-Sample & 96.1\% & 119.16 \\
+Total Uncertainty & 93.0\% & 102.74 \\
+\textbf{Decomposed (Ours)} & \textbf{93.0\%} & \textbf{117.11} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =========================================
+% Table 2: Noise Level Ablation
+% =========================================
+\begin{table}[t]
+\centering
+\caption{Noise Level Ablation — Success Rate (\%)}
+\label{tab:noise_ablation}
+\begin{tabular}{lccc}
+\toprule
+Noise Level & Vanilla & Multi-Sample & \textbf{Decomposed} \\
+\midrule
+None (0 cm) & 100.0\% & 100.0\% & \textbf{100.0\%} \\
+Low (2 cm) & 100.0\% & 100.0\% & \textbf{100.0\%} \\
+Medium (5 cm) & 95.3\% & 100.0\% & \textbf{100.0\%} \\
+High (10 cm) & 58.0\% & 96.1\% & \textbf{96.1\%} \\
+Extreme (15 cm) & 29.0\% & 82.0\% & \textbf{85.2\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =========================================
+% Table 3: OOD Perturbation (Lift)
+% =========================================
+\begin{table*}[t]
+\centering
+\caption{OOD Perturbation Robustness — Lift Cube (HIGH noise + OOD)}
+\label{tab:ood}
+\begin{tabular}{lcccccc}
+\toprule
+Scenario & Vanilla & Deep Ens. & MC Drop. & Multi-S. & Total-U. & \textbf{Decomposed} \\
+\midrule
+mass_2x & 52.0\% & 40.0\% & 51.0\% & 98.0\% & 87.0\% & \textbf{95.3\%} \\
+mass_5x & 35.0\% & 19.0\% & 32.0\% & 82.2\% & 62.0\% & \textbf{76.0\%} \\
+mass_10x & 2.0\% & 2.0\% & 2.0\% & 18.4\% & 14.0\% & \textbf{15.0\%} \\
+friction_0.5 & 48.0\% & 56.0\% & 44.0\% & 96.1\% & 88.0\% & \textbf{95.0\%} \\
+friction_0.2 & 49.0\% & 38.6\% & 47.0\% & 94.0\% & 92.0\% & \textbf{90.6\%} \\
+gravity_1.5 & 58.0\% & 55.5\% & 55.5\% & 96.1\% & 89.1\% & \textbf{97.7\%} \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+% =========================================
+% Table 5: Conformal Prediction
+% =========================================
+\begin{table}[t]
+\centering
+\caption{Conformal Prediction — Online Evaluation}
+\label{tab:conformal}
+\begin{tabular}{lc}
+\toprule
+Method & Success Rate \\
+\midrule
+No CP (Vanilla) & 66.5\% \\
+Total Uncert. CP (90\%) & 79.0\% \\
+Decomposed CP (90\%) & 80.0\% \\
+\textbf{Decomposed (fixed)} & \textbf{95.1\%} \\
+\bottomrule
+\end{tabular}
+\end{table}

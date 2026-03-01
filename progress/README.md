@@ -20,6 +20,7 @@ This folder tracks every major milestone with full parameters, results, and pape
 | [v2.6](v2.6_multi_task_reach.md) | Multi-Task: Reach (P3) | 2026-02-28 | Orthogonality holds, D beats TU in 4/4 Reach scenarios |
 | [v2.7](v2.7_deep_ensemble_mc_dropout.md) | Deep Ensemble & MC Dropout (P4) | 2026-02-28 | DE 45%, MCD 53% — action variance fails under noise |
 | [v2.8](v2.8_conformal_prediction.md) | Conformal Prediction (P5) | 2026-02-28 | CP provides coverage guarantees, D-CP 80% vs TU-CP 79% |
+| [v2.9](v2.9_figures_and_tables.md) | Paper Figures & Tables (P6) | 2026-02-28 | 7 figures + LaTeX tables generated |
 
 ## Current Best Results (HIGH noise, 100 episodes, Lift)
 

@@ -102,6 +102,7 @@ uncertainty_franka/
 ├── evaluate_ood.py              # OOD perturbation evaluation (mass/friction/gravity/damping)
 ├── evaluate_conformal.py        # Conformal prediction coverage evaluation
 ├── collect_calibration_data.py  # Collect X_cal from clean environment
+├── plot_figures.py              # Generate all paper figures and LaTeX tables
 ├── MASTER_PLAN.md               # Full paper plan with experiments and baselines
 ├── uncertainty/                 # Core uncertainty module
 │   ├── aleatoric.py             # MSV + Mahalanobis estimators
@@ -111,9 +112,10 @@ uncertainty_franka/
 │   ├── orthogonality.py         # OrthogonalityAnalyzer (Pearson, Spearman, HSIC, CKA)
 │   ├── perturbations.py         # Observation + Environment perturbations
 │   └── conformal.py             # Conformal prediction calibration + ACI
+├── figures/                     # Generated paper figures (PDF + PNG)
 ├── progress/                    # Versioned experiment journal
 │   ├── v1.0 — v1.2             # Baseline → EMA → Multi-sample
-│   └── v2.0 — v2.8             # Calibration → Estimators → Decomposed → Sweep → OOD → Multi-task → Baselines → Conformal
+│   └── v2.0 — v2.9             # Calibration → Estimators → Decomposed → Sweep → OOD → Multi-task → Baselines → Conformal → Figures
 └── README.md
 ```
 
